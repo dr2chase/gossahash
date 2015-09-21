@@ -122,6 +122,7 @@ func trySuffix(suffix string) int {
 func main() {
 	flag.Var(&args, "c", "executable file of one arg hashstring to run.\n"+
 		"\tMay be repeated to supply leading args to command.\n\t") // default on next line
+
 	flag.StringVar(&logPrefix, "l", logPrefix, "prefix of log file names ending ...{PASS,FAIL}.log")
 	flag.IntVar(&hashLimit, "n", hashLimit, "maximum hash string length to try before giving up")
 	flag.StringVar(&suffix, "P", suffix, "root string to begin searching at (default empty)")
@@ -150,6 +151,7 @@ func main() {
 
 	confirmed_suffix := suffix
 
+loop:
 	for len(confirmed_suffix) < hashLimit {
 
 		suffix = "0" + confirmed_suffix
@@ -160,7 +162,7 @@ func main() {
 			continue
 		case PASSED:
 		case DONE:
-			break
+			break loop
 		}
 
 		suffix = "1" + confirmed_suffix
@@ -171,9 +173,9 @@ func main() {
 			continue
 		case PASSED:
 			fmt.Fprintf(os.Stdout, "Both trials unexpectedly succeeded", string(suffix))
-			break
+			break loop
 		case DONE:
-			break
+			break loop
 		}
 
 		// TODO: if 0xyz and 1xyz both succeed but xyz failed,
