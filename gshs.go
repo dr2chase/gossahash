@@ -11,19 +11,21 @@ import (
 )
 
 var (
-	hashLimit                 int    = 20
+	hashLimit                 int    = 30
 	test_command              string = "./gshs_test.bash"
 	suffix                    string = "" // If not empty default, fix the flag default below.
 	logPrefix                 string = "GSHS_LAST_"
 	verbose                   bool   = false
-	timeout                   int    = 10 // Timeout to apply to command; failure if hit
-	function_selection_string        = "GOSSAHASH triggered"
+	timeout                   int    = 30 // Timeout to apply to command; failure if hit
+	hash_ev_name                     = "GOSSAHASH"
+	function_selection_string        = hash_ev_name + " triggered"
 )
 
 const (
 	FAILED = iota
 	PASSED
 	DONE
+	DONE0 // not supposed to happen; failure without adding anything new.
 )
 
 // saveLogFiles stores data in filename, unless it cannot
@@ -50,6 +52,10 @@ func (a *arg) Set(value string) error {
 	return nil
 }
 
+var hashes []string
+var next_confirmed_hash_index int
+var next_unconfirmed_hash_index int
+
 // tryCmd runs the test command with suffix appended to the args.
 // If timeout is greater than zero then the command will be
 // killed after that many seconds (to help with bugs that exhibit
@@ -58,11 +64,27 @@ func (a *arg) Set(value string) error {
 func tryCmd(suffix string) (output []byte, err error) {
 	cmd := exec.Command(test_command)
 	cmd.Args = append(cmd.Args, args...)
-	cmd.Args = append(cmd.Args, suffix)
+	cmd.Env = os.Environ()
+	extraenv := make([]string, 0)
+
+	ev := fmt.Sprintf("%s=%s", hash_ev_name, suffix)
+	cmd.Env = append(cmd.Env, ev)
+	extraenv = append(extraenv, ev)
+
+	for i := 0; i < next_unconfirmed_hash_index; i++ {
+		ev = fmt.Sprintf("%s%d=%s", hash_ev_name, i, hashes[i])
+		cmd.Env = append(cmd.Env, ev)
+		extraenv = append(extraenv, ev)
+	}
+
 	if verbose {
-		fmt.Fprintf(os.Stdout, "Trying %s,%v\n", test_command, cmd.Args)
+		fmt.Fprintf(os.Stdout, "Trying %s, %v + %s\n", test_command, cmd.Args, extraenv)
 	} else {
-		fmt.Fprintf(os.Stdout, "Trying %s\n", suffix)
+		if len(extraenv) == 0 {
+			fmt.Fprintf(os.Stdout, "Trying %s\n", suffix)
+		} else {
+			fmt.Fprintf(os.Stdout, "Trying %s + %s\n", suffix, extraenv)
+		}
 	}
 
 	if timeout <= 0 {
@@ -108,8 +130,11 @@ func trySuffix(suffix string) int {
 		// we like errors.
 		fmt.Fprintf(os.Stdout, "%s failed: %s\n", test_command, error.Error())
 		saveLogFile(logPrefix+"FAIL.log", output)
-		if count == 1 {
+		if count <= 1 {
 			fmt.Fprintf(os.Stdout, "Review %s for failing run\n", logPrefix+"FAIL.log")
+			if count == 0 {
+				return DONE0
+			}
 			return DONE
 		}
 		return FAILED
@@ -153,41 +178,62 @@ func main() {
 
 loop:
 	for len(confirmed_suffix) < hashLimit {
-
 		suffix = "0" + confirmed_suffix
-
 		switch trySuffix(suffix) {
 		case FAILED:
 			confirmed_suffix = suffix
 			continue
 		case PASSED:
-		case DONE:
-			break loop
-		}
+		case DONE0:
+			fmt.Fprintf(os.Stdout, "Failure without triggering optimization, discarding\n")
+			confirmed_suffix = hashes[next_confirmed_hash_index]
+			hashes[next_confirmed_hash_index] = hashes[next_unconfirmed_hash_index-1]
+			hashes = hashes[0 : len(hashes)-1]
+			next_unconfirmed_hash_index--
+			continue
 
+		case DONE:
+			if next_confirmed_hash_index == next_unconfirmed_hash_index {
+				break loop
+			}
+			confirmed_suffix = hashes[next_confirmed_hash_index]
+			hashes[next_confirmed_hash_index] = suffix
+			next_confirmed_hash_index++
+			continue
+		}
 		suffix = "1" + confirmed_suffix
-
 		switch trySuffix(suffix) {
 		case FAILED:
 			confirmed_suffix = suffix
 			continue
 		case PASSED:
-			fmt.Fprintf(os.Stdout, "Both trials unexpectedly succeeded", string(suffix))
-			break loop
+			fmt.Fprintf(os.Stdout, "Both trials unexpectedly succeeded\n")
+			hashes = append(hashes, suffix)
+			next_unconfirmed_hash_index = len(hashes)
+			confirmed_suffix = "0" + confirmed_suffix
+		case DONE0:
+			fmt.Fprintf(os.Stdout, "Failure without triggering optimization, discarding\n")
+			confirmed_suffix = hashes[next_confirmed_hash_index]
+			hashes[next_confirmed_hash_index] = hashes[next_unconfirmed_hash_index-1]
+			hashes = hashes[0 : len(hashes)-1]
+			next_unconfirmed_hash_index--
+			continue
 		case DONE:
-			break loop
+			if next_confirmed_hash_index == next_unconfirmed_hash_index {
+				break loop
+			}
+			confirmed_suffix = hashes[next_confirmed_hash_index]
+			hashes[next_confirmed_hash_index] = suffix
+			next_confirmed_hash_index++
+			continue
 		}
-
-		// TODO: if 0xyz and 1xyz both succeed but xyz failed,
-		// that means the failure requires two or more functions
-		// to be SSA-compiled.  With a multiple hash matcher
-		// (e.g., that tries GOSSAHASH1, GOSSAHASH2, etc)
-		// the search can proceed by continuing the search
-		// at GOSSAHASH1=1xyz GOSSAHASH={0,1}0xyz.
-		// Once GOSSAHASH converges on the single point,
-		// the roles can be reversed and the search continued
-		// at GOSSAHASH={0,1}1xyz GOSSAHASH1=abc0xyz
-
 	}
-	fmt.Fprintf(os.Stdout, "Finished with suffix = %s\n", string(suffix))
+	fmt.Fprintf(os.Stdout, "Finished with GOSSAHASH=%s\n", string(suffix))
+	if next_unconfirmed_hash_index > 0 {
+		fmt.Printf("Multiple methods required for failure:\nGOSSAHASH=%s", suffix)
+		for i := 0; i < next_unconfirmed_hash_index; i++ {
+			fmt.Printf(" %s%d=%s", hash_ev_name, i, hashes[i])
+		}
+		fmt.Println()
+	}
 }

@@ -1,2 +1,3 @@
 #!/bin/bash
-GOSSAPKG=flate GOSSAHASH="$1" go test -v -run TestForwardCopy .
+# Expect to see GOSSAHASH in environment
+GOSSAPKG=flate go test -v -run TestForwardCopy .
