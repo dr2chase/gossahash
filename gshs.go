@@ -5,29 +5,34 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
+	"math/rand"
 	"os"
 	"os/exec"
 	"time"
 )
 
 var (
-	hashLimit                 int    = 30
-	test_command              string = "./gshs_test.bash"
-	suffix                    string = "" // If not empty default, fix the flag default below.
-	logPrefix                 string = "GSHS_LAST_"
-	verbose                   bool   = false
-	timeout                   int    = 30 // Timeout to apply to command; failure if hit
-	hash_ev_name                     = "GOSSAHASH"
-	function_selection_string        = hash_ev_name + " triggered"
-	fail                      bool
+	hashLimit    int    = 30 // Maximum length of a hash string
+	test_command string = "./gshs_test.bash"
+	suffix       string = ""           // The initial hash suffix assumed to cause failure.
+	logPrefix    string = "GSHS_LAST_" // Prefix on PASS/FAIL log files.
+	verbose      bool   = false
+	timeout      int    = 30 // Timeout to apply to command; failure if hit
+
+	// Name of the environment variable that contains the hash suffix to be matched against function name hashes.
+	hash_ev_name = "GOSSAHASH"
+	// Expect to see this in the output when a value for GOSSAHASH triggers SSA-compilation of a function.
+	function_selection_string = hash_ev_name + " triggered"
+
+	fail bool // If true, converts behavior to a test program
 )
 
 const (
-	FAILED = iota
-	PASSED
-	PASSED0 // no hits, thus passed.
-	DONE
-	DONE0 // not supposed to happen; failure without adding anything new.
+	FAILED  = iota // Script exited with return code > 0 and multiple functions SSA compiled.
+	DONE           // Script exited with return code > 0 and exactly one function SSA compiled.
+	DONE0          // Script exited with return code > 0 and no functions SSA compiled (means test is flaky)
+	PASSED         // Script exited with return code 0
+	PASSED0        // Script exited with return code 0 AND no functions SSA compiled.
 )
 
 // saveLogFiles stores data in filename, unless it cannot
@@ -54,32 +59,35 @@ func (a *arg) Set(value string) error {
 	return nil
 }
 
+// The accumulated list of hashes that are either proven
+// singleton triggers that contribute to failure, or proven/
+// inferred to trigger at least one SSA-compilation that
+// contributes to failure.
 var hashes []string
 
-// hashes below this correspond to a single function whose
-// compilation is necessary to trigger a failure.
+// hashes before  this index correspond to a single function
+// whose compilation is necessary to trigger a failure.
+// This counter advances as new singleton-triggering hashes
+// are found.
 var next_singleton_hash_index int
 
-// hashes below this are confirmed to contain a function
-// whose compilation is necessary to trigger a failure.
-// failure is either directly verified or inferred.
-// var next_confirmed_hash_index int
-
-// tryCmd runs the test command with suffix appended to the args.
+// tryCmd runs the test command with suffix and all the hashes
+// assigned to environment variables of the form GOSSAHASH and
+// GOSSAHASH%d for [0:len(hashes)-1]
 // If timeout is greater than zero then the command will be
 // killed after that many seconds (to help with bugs that exhibit
 // as an infinite loop), otherwise it runs to completion and the
-// error code and output are captureed and returned.
+// error code and output are captured and returned.
 func tryCmd(suffix string) (output []byte, err error) {
 	cmd := exec.Command(test_command)
 	cmd.Args = append(cmd.Args, args...)
+
+	// Fill the env
 	cmd.Env = os.Environ()
 	extraenv := make([]string, 0)
-
 	ev := fmt.Sprintf("%s=%s", hash_ev_name, suffix)
 	cmd.Env = append(cmd.Env, ev)
 	extraenv = append(extraenv, ev)
-
 	for i := 0; i < len(hashes); i++ {
 		ev = fmt.Sprintf("%s%d=%s", hash_ev_name, i, hashes[i])
 		cmd.Env = append(cmd.Env, ev)
@@ -87,12 +95,12 @@ func tryCmd(suffix string) (output []byte, err error) {
 	}
 
 	if verbose {
-		fmt.Fprintf(os.Stdout, "Trying %s, %v + %s\n", test_command, cmd.Args, extraenv)
+		fmt.Fprintf(os.Stdout, "Trying %s args=%s, env=%s\n", test_command, cmd.Args, extraenv)
 	} else {
 		if len(extraenv) == 0 {
 			fmt.Fprintf(os.Stdout, "Trying %s\n", suffix)
 		} else {
-			fmt.Fprintf(os.Stdout, "Trying %s + %s\n", suffix, extraenv)
+			fmt.Fprintf(os.Stdout, "Trying %s\n", extraenv)
 		}
 	}
 
@@ -138,9 +146,10 @@ func trySuffix(suffix string) int {
 	if error != nil {
 		// we like errors.
 		fmt.Fprintf(os.Stdout, "%s failed: %s\n", test_command, error.Error())
-		saveLogFile(logPrefix+"FAIL.log", output)
+		lfn := fmt.Sprintf("%sFAIL.%d.log", logPrefix, next_singleton_hash_index)
+		saveLogFile(lfn, output)
 		if count <= 1 {
-			fmt.Fprintf(os.Stdout, "Review %s for failing run\n", logPrefix+"FAIL.log")
+			fmt.Fprintf(os.Stdout, "Review %s for failing run\n", lfn)
 			if count == 0 {
 				return DONE0
 			}
@@ -179,6 +188,7 @@ func main() {
 	flag.Parse()
 
 	if fail {
+		// Be a test program instead.
 		test()
 		return
 	}
@@ -189,24 +199,36 @@ func main() {
 		args = args[1:]
 	}
 
-	// confirmed_suffix is a suffix that is confirmed (initially asserted)
-	// to contain a failure.
+	rand.Seed(time.Now().UnixNano())
+
+	// confirmed_suffix is a suffix that is confirmed
+	// to contain a failure.  The first confirmation is
+	// assumed to have occurred externally before this
+	// program was run.
 	confirmed_suffix := suffix
-loop:
+searchloop:
 	for len(confirmed_suffix) < hashLimit {
-		suffix = "0" + confirmed_suffix
+		a := "0"
+		b := "1"
+		if 0 == 8192&rand.Int() {
+			t := a
+			a = b
+			b = t
+		}
+		suffix = a + confirmed_suffix
 		first_result := trySuffix(suffix)
 		switch first_result {
 		case FAILED:
 			// Suffix is confirmed to contain a failure,
 			// but there is more than one match (function compiled)
+			// Record this confirmation and continue the search.
 			confirmed_suffix = suffix
 			continue
 
 		case PASSED0:
 		case PASSED:
-			// Suffix does not trigger a failure
-
+			// Suffix does not trigger a failure, so try
+			// prepending a "1" instead, below.
 		case DONE0:
 			// Treat this like a "pass" -- this hashcode is not useful for failure.
 
@@ -214,14 +236,19 @@ loop:
 			// suffix caused exactly one function to be optimized
 			// and the test also failed.
 			if next_singleton_hash_index == len(hashes) {
-				break loop
+				// In this case all confirmed searches have yielded
+				// singleton instances and we are done.
+				break searchloop
 			}
+			// record this discovery and move on to the next one.
 			confirmed_suffix = hashes[next_singleton_hash_index]
 			hashes[next_singleton_hash_index] = suffix
 			next_singleton_hash_index++
 			continue
 		}
-		suffix = "1" + confirmed_suffix
+
+		// The a arm contained no failures, try the b arm.
+		suffix = b + confirmed_suffix
 		switch trySuffix(suffix) {
 		case FAILED:
 			confirmed_suffix = suffix
@@ -234,16 +261,22 @@ loop:
 				// 0xyz and one in 1xyz.  Therefore, put 1xyz in the set
 				// of confirmed (i.e., contains a non-isolated failure)
 				// mark 0xyz as confirmed for local search, and continue.
-				hashes = append(hashes, suffix)
-				confirmed_suffix = "0" + confirmed_suffix
+				if 0 == 8192&rand.Int() {
+					t := a
+					a = b
+					b = t
+				}
+				hashes = append(hashes, b+confirmed_suffix)
+				confirmed_suffix = a + confirmed_suffix
 				continue
 			}
 			fallthrough
 
 		case PASSED0, DONE0:
-			fmt.Fprintf(os.Stdout, "Combination of empty and pass, discard path\n")
+			// If we are here, the test is flaky.
+			fmt.Fprintf(os.Stdout, "Combination of empty and pass, discard path (test is flaky)\n")
 			if next_singleton_hash_index == len(hashes) {
-				break loop
+				break searchloop
 			}
 			confirmed_suffix = hashes[len(hashes)-1]
 			hashes = hashes[0 : len(hashes)-1]
@@ -251,9 +284,12 @@ loop:
 
 		case DONE:
 			if next_singleton_hash_index == len(hashes) {
-				break loop
+				break searchloop
 			}
-			confirmed_suffix = hashes[next_singleton_hash_index]
+			// Randomly choose another place to work.
+			j := rand.Intn(len(hashes) - next_singleton_hash_index)
+			confirmed_suffix = hashes[next_singleton_hash_index+j]
+			hashes[next_singleton_hash_index+j] = hashes[next_singleton_hash_index]
 			hashes[next_singleton_hash_index] = suffix
 			next_singleton_hash_index++
 			continue
@@ -261,18 +297,25 @@ loop:
 	}
 
 	fmt.Fprintf(os.Stdout, "Finished with GOSSAHASH=%s\n", string(suffix))
+
+	// Because the tests can be flaky, see if we accidentally included hashes that aren't
+	// really necessary.  This is a boring mechanical task that computers excel at...
 	if len(hashes) > 0 {
 		fmt.Printf("Before filtering, multiple methods required for failure:\nGOSSAHASH=%s", suffix)
 		for i := 0; i < len(hashes); i++ {
 			fmt.Printf(" %s%d=%s", hash_ev_name, i, hashes[i])
 		}
 		fmt.Println()
+
 		// Next filter the hashes to see if any can be excluded:
-		next_confirmed_hash_index := len(hashes) - 1
-		temporarily_removed := hashes[next_confirmed_hash_index]
-		hashes = hashes[0:next_confirmed_hash_index]
-		for i := next_confirmed_hash_index; i >= -1 && next_confirmed_hash_index >= 0; i-- {
-			// do a run excluding hashes[i], where hashes[-1] == suffix
+		temporarily_removed := hashes[len(hashes)-1]
+		hashes = hashes[0 : len(hashes)-1]
+		// suffix is initially the last value of GOSSAHASH
+
+		for i := len(hashes); i >= -1 && len(hashes) > 0; i-- {
+			// Special values for search:
+			// hashes[len(hashes)] == temporarily_removed,
+			// hashes[-1] == suffix
 			t := temporarily_removed
 			if i == -1 {
 				temporarily_removed = suffix
@@ -280,21 +323,27 @@ loop:
 			} else if i < len(hashes) {
 				temporarily_removed = hashes[i]
 				hashes[i] = t
-			} // temporarily_removed is the excluded one if i == len(hashes)
+			}
 			switch trySuffix(suffix) {
 			case DONE0: // failed but GOSSAHASH triggered nothing
 				// needed neither GOSSAHASH nor the excluded one.
-				next_confirmed_hash_index--
-				suffix = hashes[next_confirmed_hash_index]
-				next_confirmed_hash_index--
-				hashes = hashes[0:next_confirmed_hash_index]
-
-			case DONE, FAILED: // ought not see failed....
-				next_confirmed_hash_index--
-				hashes = hashes[0:next_confirmed_hash_index]
+				if len(hashes) > 1 { // cannot be zero, see loop condition.
+					temporarily_removed = ""
+					suffix = hashes[len(hashes)-1]
+					hashes = nil // exit with only suffix
+				} else {
+					suffix = hashes[len(hashes)-1]
+					temporarily_removed = hashes[len(hashes)-2]
+					hashes = hashes[0 : len(hashes)-2]
+				}
+			case DONE, FAILED: // ought not see failed, but never mind.
+				temporarily_removed = hashes[len(hashes)-1]
+				hashes = hashes[0 : len(hashes)-1]
 			}
 		}
-		hashes = append(hashes, temporarily_removed)
+		if temporarily_removed != "" {
+			hashes = append(hashes, temporarily_removed)
+		}
 		fmt.Printf("After filtering, methods required for failure:\nGOSSAHASH=%s", suffix)
 		for i := 0; i < len(hashes); i++ {
 			fmt.Printf(" %s%d=%s", hash_ev_name, i, hashes[i])
