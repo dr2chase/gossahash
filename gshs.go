@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 )
 
@@ -22,7 +23,11 @@ var (
 	// Name of the environment variable that contains the hash suffix to be matched against function name hashes.
 	hash_ev_name = "GOSSAHASH"
 	// Expect to see this in the output when a value for GOSSAHASH triggers SSA-compilation of a function.
-	function_selection_string = hash_ev_name + " triggered"
+	function_selection_string  string
+	function_selection_logfile string
+	function_selection_stdout  bool // Use stdout instead of a logfile
+
+	tmpdir string
 
 	fail bool // If true, converts behavior to a test program
 )
@@ -85,9 +90,15 @@ func tryCmd(suffix string) (output []byte, err error) {
 	// Fill the env
 	cmd.Env = os.Environ()
 	extraenv := make([]string, 0)
-	ev := fmt.Sprintf("%s=%s", hash_ev_name, suffix)
+
+	ev := fmt.Sprintf("%s=%s", "GSHS_LOGFILE", function_selection_logfile)
 	cmd.Env = append(cmd.Env, ev)
 	extraenv = append(extraenv, ev)
+
+	ev = fmt.Sprintf("%s=%s", hash_ev_name, suffix)
+	cmd.Env = append(cmd.Env, ev)
+	extraenv = append(extraenv, ev)
+
 	for i := 0; i < len(hashes); i++ {
 		ev = fmt.Sprintf("%s%d=%s", hash_ev_name, i, hashes[i])
 		cmd.Env = append(cmd.Env, ev)
@@ -141,12 +152,21 @@ func tryCmd(suffix string) (output []byte, err error) {
 func trySuffix(suffix string) int {
 	function_selection_bytes := []byte(function_selection_string)
 	output, error := tryCmd(suffix)
+
+	if function_selection_logfile != "" {
+		outputf, errorf := ioutil.ReadFile(function_selection_logfile)
+		if errorf == nil {
+			output = outputf
+		}
+	}
+
 	count := bytes.Count(output, function_selection_bytes)
 
 	if error != nil {
 		// we like errors.
 		fmt.Fprintf(os.Stdout, "%s failed: %s\n", test_command, error.Error())
 		lfn := fmt.Sprintf("%sFAIL.%d.log", logPrefix, next_singleton_hash_index)
+		// lfn = filepath.Join(tmpdir, lfn)
 		saveLogFile(lfn, output)
 		if count <= 1 {
 			fmt.Fprintf(os.Stdout, "Review %s for failing run\n", lfn)
@@ -165,14 +185,23 @@ func trySuffix(suffix string) int {
 }
 
 func main() {
+	flag.IntVar(&timeout, "t", timeout, "timeout in seconds for running test script, 0=run till done")
+
 	flag.Var(&args, "c", "executable file of one arg hashstring to run.\n"+
 		"\tMay be repeated to supply leading args to command.\n\t") // default on next line
 
-	flag.StringVar(&logPrefix, "l", logPrefix, "prefix of log file names ending ...{PASS,FAIL}.log")
-	flag.IntVar(&hashLimit, "n", hashLimit, "maximum hash string length to try before giving up")
-	flag.StringVar(&suffix, "P", suffix, "root string to begin searching at (default empty)")
+	flag.StringVar(&hash_ev_name, "e", hash_ev_name, "name/prefix of environment variable used for hash suffix")
+
 	flag.BoolVar(&verbose, "v", verbose, "also print output of test script (default false)")
-	flag.IntVar(&timeout, "t", timeout, "timeout in seconds for running test script, 0=run till done")
+
+	flag.IntVar(&hashLimit, "n", hashLimit, "maximum hash string length to try before giving up")
+
+	flag.StringVar(&logPrefix, "l", logPrefix, "prefix of log file names ending ...{PASS,FAIL}.log")
+
+	flag.StringVar(&suffix, "P", suffix, "root string to begin searching at (default empty)")
+
+	flag.BoolVar(&function_selection_stdout, "s", function_selection_stdout, "use stdout for 'triggered' communication")
+
 	flag.BoolVar(&fail, "f", fail, "act as a test program")
 
 	flag.Usage = func() {
@@ -186,6 +215,18 @@ func main() {
 	}
 
 	flag.Parse()
+
+	var ok error
+	tmpdir, ok = ioutil.TempDir("", "gshstmp")
+	if ok != nil {
+		fmt.Printf("Failed to create temporary directory")
+		os.Exit(1)
+	}
+
+	function_selection_string = hash_ev_name + " triggered"
+	if !function_selection_stdout {
+		function_selection_logfile = filepath.Join(tmpdir, hash_ev_name+".triggered")
+	}
 
 	if fail {
 		// Be a test program instead.
@@ -296,7 +337,7 @@ searchloop:
 		}
 	}
 
-	fmt.Fprintf(os.Stdout, "Finished with GOSSAHASH=%s\n", string(suffix))
+	fmt.Fprintf(os.Stdout, "Finished with %s=%s\n", hash_ev_name, string(suffix))
 
 	// Because the tests can be flaky, see if we accidentally included hashes that aren't
 	// really necessary.  This is a boring mechanical task that computers excel at...
