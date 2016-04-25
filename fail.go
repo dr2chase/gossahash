@@ -120,12 +120,12 @@ var names []string = []string{
 
 func doit(name string) bool {
 	if os.Getenv("GOSSAHASH") == "" {
-		// Use everything in the package
+		// Default behavior is yes.
 		return true
 	}
 	// Check the hash of the name against a partial input hash.
-	// We use this feature to do a binary search within a package to
-	// find a function that is incorrectly compiled.
+	// We use this feature to do a binary search within a
+	// package to find a function that is incorrectly compiled.
 	hstr := ""
 	for _, b := range sha1.Sum([]byte(name)) {
 		hstr += fmt.Sprintf("%08b", b)
@@ -134,9 +134,8 @@ func doit(name string) bool {
 		fmt.Printf("GOSSAHASH triggered %s\n", name)
 		return true
 	}
-
-	// Iteratively try additional hashes to allow tests for multi-point
-	// failure.
+	// Iteratively try additional hashes to allow tests for
+	// multi-point failure.
 	for i := 0; true; i++ {
 		ev := fmt.Sprintf("GOSSAHASH%d", i)
 		evv := os.Getenv(ev)
@@ -151,6 +150,8 @@ func doit(name string) bool {
 	return false
 }
 
+// test fails when "doit" is true for exactly 7 3-letter names.
+// this simulates multiple triggers required for failure.
 func test() {
 	threeletters := 0
 	for _, w := range names {
@@ -158,7 +159,7 @@ func test() {
 			threeletters++
 		}
 	}
-	if threeletters == 8 {
+	if threeletters == 7 {
 		fmt.Println("FAIL!")
 		os.Exit(1)
 	}

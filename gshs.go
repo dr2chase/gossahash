@@ -18,7 +18,7 @@ var (
 	suffix       string = ""           // The initial hash suffix assumed to cause failure.
 	logPrefix    string = "GSHS_LAST_" // Prefix on PASS/FAIL log files.
 	verbose      bool   = false
-	timeout      int    = 30 // Timeout to apply to command; failure if hit
+	timeout      int    = 60 // Timeout to apply to command; failure if hit
 
 	// Name of the environment variable that contains the hash suffix to be matched against function name hashes.
 	hash_ev_name = "GOSSAHASH"
@@ -53,7 +53,7 @@ func saveLogFile(filename string, data []byte) {
 
 type arg []string
 
-var args arg = arg{test_command}
+var args arg = arg{test_command} // default value for -h printing, will be discarded.
 
 func (a *arg) String() string {
 	return fmt.Sprintf("%v", *a)
@@ -91,11 +91,13 @@ func tryCmd(suffix string) (output []byte, err error) {
 	cmd.Env = os.Environ()
 	extraenv := make([]string, 0)
 
-	ev := fmt.Sprintf("%s=%s", "GSHS_LOGFILE", function_selection_logfile)
-	cmd.Env = append(cmd.Env, ev)
-	extraenv = append(extraenv, ev)
+	if function_selection_logfile != "" {
+		ev := fmt.Sprintf("%s=%s", "GSHS_LOGFILE", function_selection_logfile)
+		cmd.Env = append(cmd.Env, ev)
+		extraenv = append(extraenv, ev)
+	}
 
-	ev = fmt.Sprintf("%s=%s", hash_ev_name, suffix)
+	ev := fmt.Sprintf("%s=%s", hash_ev_name, suffix)
 	cmd.Env = append(cmd.Env, ev)
 	extraenv = append(extraenv, ev)
 
@@ -105,8 +107,8 @@ func tryCmd(suffix string) (output []byte, err error) {
 		extraenv = append(extraenv, ev)
 	}
 
-	if verbose {
-		fmt.Fprintf(os.Stdout, "Trying %s args=%s, env=%s\n", test_command, cmd.Args, extraenv)
+	if verbose || true {
+		fmt.Fprintf(os.Stdout, "Trying %s args=%s, env=%s\n", test_command, args, extraenv)
 	} else {
 		if len(extraenv) == 0 {
 			fmt.Fprintf(os.Stdout, "Trying %s\n", suffix)
@@ -187,18 +189,18 @@ func trySuffix(suffix string) int {
 func main() {
 	flag.IntVar(&timeout, "t", timeout, "timeout in seconds for running test script, 0=run till done")
 
-	flag.Var(&args, "c", "executable file of one arg hashstring to run.\n"+
+	flag.Var(&args, "c", "executable file to run.\n"+
 		"\tMay be repeated to supply leading args to command.\n\t") // default on next line
 
-	flag.StringVar(&hash_ev_name, "e", hash_ev_name, "name/prefix of environment variable used for hash suffix")
+	flag.StringVar(&hash_ev_name, "e", hash_ev_name, "name/prefix of environment variable communicating hash suffix")
 
 	flag.BoolVar(&verbose, "v", verbose, "also print output of test script (default false)")
 
-	flag.IntVar(&hashLimit, "n", hashLimit, "maximum hash string length to try before giving up")
+	flag.IntVar(&hashLimit, "n", hashLimit, "maximum hash suffix length to try before giving up")
 
 	flag.StringVar(&logPrefix, "l", logPrefix, "prefix of log file names ending ...{PASS,FAIL}.log")
 
-	flag.StringVar(&suffix, "P", suffix, "root string to begin searching at (default empty)")
+	flag.StringVar(&suffix, "P", suffix, "root of hash suffix to begin searching at (default empty)")
 
 	flag.BoolVar(&function_selection_stdout, "s", function_selection_stdout, "use stdout for 'triggered' communication")
 
@@ -209,9 +211,63 @@ func main() {
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr,
 			`
-%s runs
+%s runs the test executable (usually a shell script) 
+repeatedly with longer and longer hash suffix parameters supplied.
+The hash suffix is made of 1 and 0 characters, expected to
+match the suffix of a hash of something interesting, like
+a function or variable name or their combination. Each run
+of the executable is expected to print '<evname> triggered'
+(for example, '%s triggered') and the hash suffix(es)
+are chosen to search for the one(s) that result in a single
+trigger line occurring.
+
+By default the trigger lines are expected to be written to
+the file named in environment variable GSHS_LOGFILE, but the
+test command is free to ignore this environment variable and
+instead use standard output.  (This permits use with test
+harnesses that swallow standard output and/or expect not to
+see "trigger" chit-chat).  Passing -s on the command line
+suppresses this environment variable setting.
+
+The %s command can be run as its own test with 
+the -f flag, as in (prints about 100 long lines):
+  %s -c %s -c -f -s 
+
+This Go code can be used to trigger the tested behavior:
+
+func doit(name string) bool {
+    if os.Getenv("GOSSAHASH") == "" {
+        // Default behavior is yes.
+        return true
+    }
+    // Check the hash of the name against a partial input hash.
+    // We use this feature to do a binary search within a
+    // package to find a function that is incorrectly compiled.
+    hstr := ""
+    for _, b := range sha1.Sum([]byte(name)) {
+        hstr += fmt.Sprintf("%%08b", b)
+    }
+    if strings.HasSuffix(hstr, os.Getenv("GOSSAHASH")) {
+        fmt.Printf("GOSSAHASH triggered %%s\n", name)
+        return true
+    }
+    // Iteratively try additional hashes to allow tests for
+    // multi-point failure.
+    for i := 0; true; i++ {
+        ev := fmt.Sprintf("GOSSAHASH%%d", i)
+        evv := os.Getenv(ev)
+        if evv == "" {
+            break
+        }
+        if strings.HasSuffix(hstr, evv) {
+            fmt.Printf("%%s triggered %%s\n", ev, name)
+            return true
+        }
+    }
+    return false
+}
 `,
-			os.Args[0])
+			os.Args[0], hash_ev_name, os.Args[0], os.Args[0], os.Args[0])
 	}
 
 	flag.Parse()
@@ -235,6 +291,10 @@ func main() {
 	}
 
 	// Extract test command and args if supplied.
+	// note that initial arg has the default value to
+	// make the -h output look right, so if there are
+	// additional args, then it is discarded.
+	args = args[1:]
 	if len(args) > 0 {
 		test_command = args[0]
 		args = args[1:]
@@ -342,7 +402,7 @@ searchloop:
 	// Because the tests can be flaky, see if we accidentally included hashes that aren't
 	// really necessary.  This is a boring mechanical task that computers excel at...
 	if len(hashes) > 0 {
-		fmt.Printf("Before filtering, multiple methods required for failure:\nGOSSAHASH=%s", suffix)
+		fmt.Printf("Before filtering, multiple methods required for failure:\n%s=%s", hash_ev_name, suffix)
 		for i := 0; i < len(hashes); i++ {
 			fmt.Printf(" %s%d=%s", hash_ev_name, i, hashes[i])
 		}
