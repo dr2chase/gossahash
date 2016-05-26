@@ -3,8 +3,10 @@ package main
 import (
 	"crypto/sha1"
 	"fmt"
+	"math/rand"
 	"os"
 	"strings"
+	"time"
 )
 
 var names []string = []string{
@@ -131,7 +133,9 @@ func doit(name string) bool {
 		hstr += fmt.Sprintf("%08b", b)
 	}
 	if strings.HasSuffix(hstr, os.Getenv("GOSSAHASH")) {
-		fmt.Printf("GOSSAHASH triggered %s\n", name)
+		for i := 7 & rand.Int(); i >= 0; i-- {
+			fmt.Printf("GOSSAHASH triggered %s\n", name)
+		}
 		return true
 	}
 	// Iteratively try additional hashes to allow tests for
@@ -143,7 +147,9 @@ func doit(name string) bool {
 			break
 		}
 		if strings.HasSuffix(hstr, evv) {
-			fmt.Printf("%s triggered %s\n", ev, name)
+			for i := 7 & rand.Int(); i >= 0; i-- {
+				fmt.Printf("%s triggered %s\n", ev, name)
+			}
 			return true
 		}
 	}
@@ -153,6 +159,7 @@ func doit(name string) bool {
 // test fails when "doit" is true for exactly 7 3-letter names.
 // this simulates multiple triggers required for failure.
 func test() {
+	rand.Seed(time.Now().UnixNano())
 	threeletters := 0
 	for _, w := range names {
 		if doit(w) && len(w) == 3 {

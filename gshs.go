@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"flag"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -152,7 +154,6 @@ func tryCmd(suffix string) (output []byte, err error) {
 // one and the command fails, then the search is done.
 // Appropriate log files and narrative are also produced.
 func trySuffix(suffix string) int {
-	function_selection_bytes := []byte(function_selection_string)
 	output, error := tryCmd(suffix)
 
 	if function_selection_logfile != "" {
@@ -162,14 +163,32 @@ func trySuffix(suffix string) int {
 		}
 	}
 
-	count := bytes.Count(output, function_selection_bytes)
+	// Compilations sometimes occur more than once, so stuff the
+	// matching string into a map. Note the map contains the whole
+	// line, so varying output not included in the hash can prevent
+	// convergence on a single trigger line.
+	m := make(map[string]int)
+	scanner := bufio.NewScanner(bytes.NewBuffer(output))
+	for scanner.Scan() {
+		s := scanner.Text()
+		if strings.Contains(s, function_selection_string) {
+			m[s] = m[s] + 1
+		}
+	}
+
+	count := len(m)
 
 	if error != nil {
 		// we like errors.
-		fmt.Fprintf(os.Stdout, "%s failed: %s\n", test_command, error.Error())
+		fmt.Fprintf(os.Stdout, "%s failed (%d distinct triggers): %s\n", test_command, count, error.Error())
 		lfn := fmt.Sprintf("%sFAIL.%d.log", logPrefix, next_singleton_hash_index)
 		// lfn = filepath.Join(tmpdir, lfn)
 		saveLogFile(lfn, output)
+		if count < 4 {
+			for k, n := range m {
+				fmt.Fprintf(os.Stdout, "Trigger string is '%s', repeated %d times\n", k, n)
+			}
+		}
 		if count <= 1 {
 			fmt.Fprintf(os.Stdout, "Review %s for failing run\n", lfn)
 			if count == 0 {
@@ -219,7 +238,10 @@ a function or variable name or their combination. Each run
 of the executable is expected to print '<evname> triggered'
 (for example, '%s triggered') and the hash suffix(es)
 are chosen to search for the one(s) that result in a single
-trigger line occurring.
+trigger line occurring.  Multiple occurrences of exactly the
+same trigger line are counted once.  When fewer than 4 lines
+trigger, the matching trigger lines are included in the
+output.
 
 By default the trigger lines are expected to be written to
 the file named in environment variable GSHS_LOGFILE, but the
