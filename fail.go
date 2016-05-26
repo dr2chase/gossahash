@@ -166,6 +166,7 @@ func test() {
 			threeletters++
 		}
 	}
+	time.Sleep(1100 * time.Millisecond)
 	if threeletters == 7 {
 		fmt.Println("FAIL!")
 		os.Exit(1)

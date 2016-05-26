@@ -130,8 +130,10 @@ func tryCmd(suffix string) (output []byte, err error) {
 			return
 		}
 		var killErr error
+		var timedOut bool
 		timer := time.AfterFunc(time.Second*time.Duration(timeout), func() {
 			killErr = cmd.Process.Signal(os.Kill)
+			timedOut = true
 		})
 		err = cmd.Wait()
 		if killErr != nil {
@@ -140,6 +142,9 @@ func tryCmd(suffix string) (output []byte, err error) {
 		}
 		timer.Stop()
 		output = b.Bytes()
+		if timedOut {
+			fmt.Fprintf(os.Stdout, "Timeout after %d seconds: ", timeout)
+		}
 	}
 
 	if verbose {
