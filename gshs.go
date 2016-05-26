@@ -20,7 +20,7 @@ var (
 	suffix       string = ""           // The initial hash suffix assumed to cause failure.
 	logPrefix    string = "GSHS_LAST_" // Prefix on PASS/FAIL log files.
 	verbose      bool   = false
-	timeout      int    = 60 // Timeout to apply to command; failure if hit
+	timeout      int    = 900 // Timeout in seconds to apply to command; failure if hit
 
 	// Name of the environment variable that contains the hash suffix to be matched against function name hashes.
 	hash_ev_name = "GOSSAHASH"
@@ -208,8 +208,8 @@ func trySuffix(suffix string) int {
 func main() {
 	flag.IntVar(&timeout, "t", timeout, "timeout in seconds for running test script, 0=run till done")
 
-	flag.Var(&args, "c", "executable file to run.\n"+
-		"\tMay be repeated to supply leading args to command.\n\t") // default on next line
+	// flag.Var(&args, "c", "executable file to run.\n"+
+	// 	"\tMay be repeated to supply leading args to command.\n\t") // default on next line
 
 	flag.StringVar(&hash_ev_name, "e", hash_ev_name, "name/prefix of environment variable communicating hash suffix")
 
@@ -230,41 +230,39 @@ func main() {
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr,
 			`
-%s runs the test executable (usually a shell script) 
-repeatedly with longer and longer hash suffix parameters supplied.
-The hash suffix is made of 1 and 0 characters, expected to
-match the suffix of a hash of something interesting, like
-a function or variable name or their combination. Each run
-of the executable is expected to print '<evname> triggered'
-(for example, '%s triggered') and the hash suffix(es)
-are chosen to search for the one(s) that result in a single
-trigger line occurring.  Multiple occurrences of exactly the
-same trigger line are counted once.  When fewer than 4 lines
-trigger, the matching trigger lines are included in the
-output.
+%s runs the test executable (default ./gshs_test.bash) repeatedly 
+with longer and longer hash suffix parameters supplied. A non-default
+command and args can be specified following any flags or "--".
 
-By default the trigger lines are expected to be written to
-the file named in environment variable GSHS_LOGFILE, but the
-test command is free to ignore this environment variable and
-instead use standard output.  (This permits use with test
-harnesses that swallow standard output and/or expect not to
-see "trigger" chit-chat).  Passing -s on the command line
-suppresses this environment variable setting.
+The hash suffix is made of 1 and 0 characters, expected to match the
+suffix of a hash of something interesting, like a function or variable
+name or their combination. Each run of the executable is expected to
+print '<evname> triggered' (for example, '%s triggered') and the hash
+suffix(es) are chosen to search for the one(s) that result in a single
+trigger line occurring.  Multiple occurrences of exactly the same
+trigger line are counted once.  When fewer than 4 lines trigger, the
+matching trigger lines are included in the output.
 
-The %s command can be run as its own test with 
-the -f flag, as in (prints about 100 long lines):
-  %s -c %s -c -f -s 
+By default the trigger lines are expected to be written to the file
+named in environment variable GSHS_LOGFILE, but the test command is
+free to ignore this environment variable and instead use standard
+output.  (This permits use with test harnesses that swallow standard
+output and/or expect not to see "trigger" chit-chat). Passing -s on
+the command line suppresses this environment variable setting.
+
+The %s command can be run as its own test with the -f flag, as in
+(prints about 100 long lines):
+
+  %s -s -- %s -f 
 
 This Go code can be used to trigger the tested behavior:
 
 func doit(name string) bool {
     if os.Getenv("GOSSAHASH") == "" {
-        // Default behavior is yes.
-        return true
+        return true  // Default behavior is yes.
     }
-    // Check the hash of the name against a partial input hash.
-    // We use this feature to do a binary search within a
-    // package to find a function that is incorrectly compiled.
+    // Check hash of name against a partial input hash.  We use this feature 
+    // to do a binary search to find a function that is incorrectly compiled.
     hstr := ""
     for _, b := range sha1.Sum([]byte(name)) {
         hstr += fmt.Sprintf("%%08b", b)
@@ -273,8 +271,7 @@ func doit(name string) bool {
         fmt.Printf("GOSSAHASH triggered %%s\n", name)
         return true
     }
-    // Iteratively try additional hashes to allow tests for
-    // multi-point failure.
+    // Iteratively try additional hashes to allow tests for multi-point failure.
     for i := 0; true; i++ {
         ev := fmt.Sprintf("GOSSAHASH%%d", i)
         evv := os.Getenv(ev)
@@ -311,6 +308,8 @@ func doit(name string) bool {
 		test()
 		return
 	}
+
+	args = append(args, flag.Args()...)
 
 	// Extract test command and args if supplied.
 	// note that initial arg has the default value to
