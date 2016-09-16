@@ -25,9 +25,10 @@ var (
 	// Name of the environment variable that contains the hash suffix to be matched against function name hashes.
 	hash_ev_name = "GOSSAHASH"
 	// Expect to see this in the output when a value for GOSSAHASH triggers SSA-compilation of a function.
-	function_selection_string  string
-	function_selection_logfile string
-	function_selection_stdout  bool // Use stdout instead of a logfile
+	function_selection_string     string
+	function_selection_logfile    string
+	function_selection_use_stdout bool = true  // Use stdout instead of a file (now default, old flag)
+	function_selection_use_file   bool = false // Use file instead of stdout
 
 	tmpdir string
 
@@ -226,9 +227,10 @@ func main() {
 
 	flag.StringVar(&suffix, "P", suffix, "root of hash suffix to begin searching at (default empty)")
 
-	flag.BoolVar(&function_selection_stdout, "s", function_selection_stdout, "use stdout for 'triggered' communication")
+	flag.BoolVar(&function_selection_use_stdout, "s", function_selection_use_stdout, "use stdout for 'triggered' communication (obsolete, now default)")
+	flag.BoolVar(&function_selection_use_file, "f", function_selection_use_file, "use file for 'triggered' communication (sets GSHS_LOGFILE)")
 
-	flag.BoolVar(&fail, "f", fail, "act as a test program")
+	flag.BoolVar(&fail, "F", fail, "act as a test program")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
@@ -248,17 +250,22 @@ trigger line occurring.  Multiple occurrences of exactly the same
 trigger line are counted once.  When fewer than 4 lines trigger, the
 matching trigger lines are included in the output.
 
-By default the trigger lines are expected to be written to the file
-named in environment variable GSHS_LOGFILE, but the test command is
-free to ignore this environment variable and instead use standard
-output.  (This permits use with test harnesses that swallow standard
-output and/or expect not to see "trigger" chit-chat). Passing -s on
-the command line suppresses this environment variable setting.
+By default the trigger lines are expected to be written to standard
+output, but -f flag sets the environment variable GSHS_LOGFILE to
+name a file where the test command *may* write its logging output.
+This permits use with test harnesses that swallow standard
+output and/or expect not to see "trigger" chit-chat.  Note that
+any tests or builds using "-f" should run in a series of
+single processes, and not in several running at the same time,
+else they may overwrite the logfile.  Similarly, the programs
+that are debugged using GSHS_LOGFILE should open it in append
+mode, not truncate, since they may have been preceded by some
+other phase of the build or test.
 
-The %s command can be run as its own test with the -f flag, as in
+The %s command can be run as its own test with the -F flag, as in
 (prints about 100 long lines):
 
-  %s -s -- %s -f 
+  %s %s -F 
 
 This Go code can be used to trigger the tested behavior:
 
@@ -304,7 +311,8 @@ func doit(name string) bool {
 	}
 
 	function_selection_string = hash_ev_name + " triggered"
-	if !function_selection_stdout {
+	if function_selection_use_file {
+		function_selection_use_stdout = false
 		function_selection_logfile = filepath.Join(tmpdir, hash_ev_name+".triggered")
 	}
 
@@ -326,6 +334,9 @@ func doit(name string) bool {
 		args = args[1:]
 	}
 
+	// Choose differently each time run to make it easier
+	// to search for multiple failures; perhaps one is
+	// substantially easier to debug in isolation.
 	rand.Seed(time.Now().UnixNano())
 
 	// confirmed_suffix is a suffix that is confirmed
@@ -428,7 +439,7 @@ searchloop:
 	// Because the tests can be flaky, see if we accidentally included hashes that aren't
 	// really necessary.  This is a boring mechanical task that computers excel at...
 	if len(hashes) > 0 {
-		fmt.Printf("Before filtering, multiple methods required for failure:\n%s=%s", hash_ev_name, suffix)
+		fmt.Printf("Before filtering, multiple hashes required for failure:\n%s=%s", hash_ev_name, suffix)
 		for i := 0; i < len(hashes); i++ {
 			fmt.Printf(" %s%d=%s", hash_ev_name, i, hashes[i])
 		}
@@ -471,7 +482,7 @@ searchloop:
 		if temporarily_removed != "" {
 			hashes = append(hashes, temporarily_removed)
 		}
-		fmt.Printf("After filtering, methods required for failure:\nGOSSAHASH=%s", suffix)
+		fmt.Printf("After filtering, hashes required for failure:\nGOSSAHASH=%s", suffix)
 		for i := 0; i < len(hashes); i++ {
 			fmt.Printf(" %s%d=%s", hash_ev_name, i, hashes[i])
 		}
