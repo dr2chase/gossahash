@@ -15,12 +15,13 @@ import (
 )
 
 var (
-	hashLimit    int    = 30 // Maximum length of a hash string
-	test_command string = "./gshs_test.bash"
-	suffix       string = ""           // The initial hash suffix assumed to cause failure.
-	logPrefix    string = "GSHS_LAST_" // Prefix on PASS/FAIL log files.
-	verbose      bool   = false
-	timeout      int    = 900 // Timeout in seconds to apply to command; failure if hit
+	hashLimit       int    = 30 // Maximum length of a hash string
+	test_command    string = "./gshs_test.bash"
+	suffix          string = ""           // The initial hash suffix assumed to cause failure.
+	logPrefix       string = "GSHS_LAST_" // Prefix on PASS/FAIL log files.
+	verbose         bool   = false
+	swapPassAndFail bool   = false
+	timeout         int    = 900 // Timeout in seconds to apply to command; failure if hit
 
 	// Name of the environment variable that contains the hash suffix to be matched against function name hashes.
 	hash_ev_name = "GOSSAHASH"
@@ -184,10 +185,19 @@ func trySuffix(suffix string) int {
 
 	count := len(m)
 
-	if error != nil {
+	// (error == nil) means success
+	prefix := ""
+	if swapPassAndFail {
+		prefix = "NOT-"
+	}
+	if (error == nil) == swapPassAndFail {
+		why := "success treated as failure"
+		if error != nil {
+			why = error.Error()
+		}
 		// we like errors.
-		fmt.Fprintf(os.Stdout, "%s failed (%d distinct triggers): %s\n", test_command, count, error.Error())
-		lfn := fmt.Sprintf("%sFAIL.%d.log", logPrefix, next_singleton_hash_index)
+		fmt.Fprintf(os.Stdout, "%s %sfailed (%d distinct triggers): %s\n", test_command, prefix, count, why)
+		lfn := fmt.Sprintf("%s%sFAIL.%d.log", logPrefix, prefix, next_singleton_hash_index)
 		// lfn = filepath.Join(tmpdir, lfn)
 		saveLogFile(lfn, output)
 		if count < 4 {
@@ -196,7 +206,7 @@ func trySuffix(suffix string) int {
 			}
 		}
 		if count <= 1 {
-			fmt.Fprintf(os.Stdout, "Review %s for failing run\n", lfn)
+			fmt.Fprintf(os.Stdout, "Review %s for %sfailing run\n", lfn, prefix)
 			if count == 0 {
 				return DONE0
 			}
@@ -204,7 +214,7 @@ func trySuffix(suffix string) int {
 		}
 		return FAILED
 	}
-	saveLogFile(logPrefix+"PASS.log", output)
+	saveLogFile(logPrefix+prefix+"PASS.log", output)
 	if count == 0 {
 		return PASSED0
 	}
@@ -219,6 +229,7 @@ func main() {
 
 	flag.StringVar(&hash_ev_name, "e", hash_ev_name, "name/prefix of environment variable communicating hash suffix")
 
+	flag.BoolVar(&swapPassAndFail, "X", swapPassAndFail, "swap pass and fail for test script (default false)")
 	flag.BoolVar(&verbose, "v", verbose, "also print output of test script (default false)")
 
 	flag.IntVar(&hashLimit, "n", hashLimit, "maximum hash suffix length to try before giving up")
@@ -261,6 +272,9 @@ else they may overwrite the logfile.  Similarly, the programs
 that are debugged using GSHS_LOGFILE should open it in append
 mode, not truncate, since they may have been preceded by some
 other phase of the build or test.
+
+Swapping pass and fail can be used to selectively disable the
+minimum number of optimizations to allow the code to run.
 
 The %s command can be run as its own test with the -F flag, as in
 (prints about 100 long lines):
