@@ -121,7 +121,7 @@ func tryCmd(suffix string) (output []byte, err error) {
 		}
 	}
 
-	if timeout <= 0 {
+	if timeout == 0 {
 		output, err = cmd.CombinedOutput()
 	} else {
 		var b bytes.Buffer
@@ -133,9 +133,15 @@ func tryCmd(suffix string) (output []byte, err error) {
 		}
 		var killErr error
 		var timedOut bool
-		timer := time.AfterFunc(time.Second*time.Duration(timeout), func() {
-			killErr = cmd.Process.Signal(os.Kill)
+		var timeoutMeansPass bool
+		t := timeout
+		if timeout < 0 {
+			timeoutMeansPass = true
+			t = -timeout
+		}
+		timer := time.AfterFunc(time.Second*time.Duration(t), func() {
 			timedOut = true
+			killErr = cmd.Process.Signal(os.Kill)
 		})
 		err = cmd.Wait()
 		if killErr != nil {
@@ -145,7 +151,12 @@ func tryCmd(suffix string) (output []byte, err error) {
 		timer.Stop()
 		output = b.Bytes()
 		if timedOut {
-			fmt.Fprintf(os.Stdout, "Timeout after %d seconds: ", timeout)
+			status := "fail"
+			if timeoutMeansPass {
+				err = nil
+				status = "pass"
+			}
+			fmt.Fprintf(os.Stdout, "Timeout after %d seconds (%s): ", t, status)
 		}
 	}
 
@@ -222,7 +233,7 @@ func trySuffix(suffix string) int {
 }
 
 func main() {
-	flag.IntVar(&timeout, "t", timeout, "timeout in seconds for running test script, 0=run till done")
+	flag.IntVar(&timeout, "t", timeout, "timeout in seconds for running test script, 0=run till done. Negative timeout means timing out is a pass, not a failure")
 
 	// flag.Var(&args, "c", "executable file to run.\n"+
 	// 	"\tMay be repeated to supply leading args to command.\n\t") // default on next line
