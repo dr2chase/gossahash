@@ -110,6 +110,10 @@ func tryCmd(suffix string) (output []byte, err error) {
 	extraenv := make([]string, 0)
 
 	if function_selection_logfile != "" {
+		// Create and truncate the file, then inject it into the environment
+		f, _ := os.Create(function_selection_logfile)
+
+		f.Close()
 		ev := fmt.Sprintf("%s=%s", "GSHS_LOGFILE", function_selection_logfile)
 		cmd.Env = append(cmd.Env, ev)
 		extraenv = append(extraenv, ev)
