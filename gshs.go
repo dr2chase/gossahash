@@ -45,6 +45,10 @@ var (
 	function_selection_use_stdout bool = true  // Use stdout instead of a file (now default, old flag)
 	function_selection_use_file   bool = false // Use file instead of stdout
 
+	lastTrigger string
+
+	commandLineEnv []string // environment variables supplied on command line after flags, before command.
+
 	tmpdir string
 
 	fail bool // If true, converts behavior to a test program
@@ -107,7 +111,7 @@ func tryCmd(suffix string) (output []byte, err error) {
 
 	// Fill the env
 	cmd.Env = os.Environ()
-	extraenv := make([]string, 0)
+	extraEnv := make([]string, 0)
 
 	if function_selection_logfile != "" {
 		// Create and truncate the file, then inject it into the environment
@@ -115,27 +119,28 @@ func tryCmd(suffix string) (output []byte, err error) {
 
 		f.Close()
 		ev := fmt.Sprintf("%s=%s", "GSHS_LOGFILE", function_selection_logfile)
-		cmd.Env = append(cmd.Env, ev)
-		extraenv = append(extraenv, ev)
+		extraEnv = append(extraEnv, ev)
 	}
 
 	ev := fmt.Sprintf("%s=%s", hash_ev_name, suffix)
-	cmd.Env = append(cmd.Env, ev)
-	extraenv = append(extraenv, ev)
+	extraEnv = append(extraEnv, ev)
 
 	for i := 0; i < len(hashes); i++ {
 		ev = fmt.Sprintf("%s%d=%s", hash_ev_name, i, hashes[i])
-		cmd.Env = append(cmd.Env, ev)
-		extraenv = append(extraenv, ev)
+		extraEnv = append(extraEnv, ev)
 	}
 
+	extraEnv = append(extraEnv, commandLineEnv...)
+
+	cmd.Env = append(cmd.Env, extraEnv...)
+
 	if verbose || true {
-		fmt.Fprintf(os.Stdout, "Trying %s args=%s, env=%s\n", test_command, args, extraenv)
+		fmt.Fprintf(os.Stdout, "Trying %s args=%s, env=%s\n", test_command, args, extraEnv)
 	} else {
-		if len(extraenv) == 0 {
+		if len(extraEnv) == 0 {
 			fmt.Fprintf(os.Stdout, "Trying %s\n", suffix)
 		} else {
-			fmt.Fprintf(os.Stdout, "Trying %s\n", extraenv)
+			fmt.Fprintf(os.Stdout, "Trying %s\n", extraEnv)
 		}
 	}
 
@@ -209,6 +214,7 @@ func trySuffix(suffix string) int {
 		s := scanner.Text()
 		if strings.Contains(s, function_selection_string) {
 			m[s] = m[s] + 1
+			lastTrigger = strings.TrimSpace(s[len(function_selection_string):])
 		}
 	}
 
@@ -365,7 +371,12 @@ func doit(name string) bool {
 		return
 	}
 
-	args = append(args, flag.Args()...)
+	restArgs := flag.Args()
+	firstNotEnv := 0
+	for ; firstNotEnv < len(restArgs) && strings.Contains(restArgs[firstNotEnv], "="); firstNotEnv++ {
+	}
+	commandLineEnv = restArgs[:firstNotEnv]
+	args = append(args, restArgs[firstNotEnv:]...)
 
 	// Extract test command and args if supplied.
 	// note that initial arg has the default value to
@@ -477,11 +488,33 @@ searchloop:
 		}
 	}
 
-	fmt.Fprintf(os.Stdout, "Finished with %s=%s\n", hash_ev_name, string(suffix))
+	printCL := func() {
+		for _, e := range commandLineEnv {
+			fmt.Printf(" %s", e)
+		}
+		fmt.Printf(" %s", test_command)
+		for _, e := range args {
+			fmt.Printf(" %s", e)
+		}
+	}
 
-	// Because the tests can be flaky, see if we accidentally included hashes that aren't
-	// really necessary.  This is a boring mechanical task that computers excel at...
-	if len(hashes) > 0 {
+	printGSF := func() {
+		if lastTrigger != "" {
+			fmt.Printf("GOSSAFUNC='%s' ", lastTrigger)
+		}
+	}
+
+	if len(hashes) == 0 {
+		fmt.Printf("FINISHED, suggest this command line for debugging:\n")
+		printGSF()
+		fmt.Printf("%s=%s", hash_ev_name, string(suffix))
+		printCL()
+		fmt.Println()
+
+	} else {
+		// Because the tests can be flaky, see if we accidentally included hashes that aren't
+		// really necessary.  This is a boring mechanical task that computers excel at...
+
 		fmt.Printf("Before filtering, multiple hashes required for failure:\n%s=%s", hash_ev_name, suffix)
 		for i := 0; i < len(hashes); i++ {
 			fmt.Printf(" %s%d=%s", hash_ev_name, i, hashes[i])
@@ -525,11 +558,14 @@ searchloop:
 		if temporarily_removed != "" {
 			hashes = append(hashes, temporarily_removed)
 		}
-		fmt.Printf("After filtering, hashes required for failure:\nGOSSAHASH=%s", suffix)
+		fmt.Printf("FINISHED, after filtering, suggest this command line for debugging:\n")
+		printGSF()
+		fmt.Printf("%s=%s", hash_ev_name, string(suffix))
+
 		for i := 0; i < len(hashes); i++ {
 			fmt.Printf(" %s%d=%s", hash_ev_name, i, hashes[i])
 		}
+		printCL()
 		fmt.Println()
-
 	}
 }
