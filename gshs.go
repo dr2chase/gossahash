@@ -162,11 +162,23 @@ func tryCmd(suffix string) (output []byte, err error) {
 			timeoutMeansPass = true
 			t = -timeout
 		}
+		doneChan := make(chan int, 1)
 		timer := time.AfterFunc(time.Second*time.Duration(t), func() {
 			timedOut = true
-			killErr = cmd.Process.Signal(os.Kill)
+			p := cmd.Process
+			killErr = p.Signal(os.Interrupt)
+			for i := 0; i < 100; i++ {
+				time.Sleep(time.Millisecond * 250)
+				select {
+				case <-doneChan:
+					return
+				default:
+				}
+			}
+			killErr = p.Signal(os.Kill)
 		})
 		err = cmd.Wait()
+		doneChan <- 1
 		if killErr != nil {
 			// Not sure what I would do with this,
 			// and it could appear merely as the result of a lost race.
@@ -214,7 +226,11 @@ func trySuffix(suffix string) int {
 		s := scanner.Text()
 		if strings.Contains(s, function_selection_string) {
 			m[s] = m[s] + 1
-			lastTrigger = strings.TrimSpace(s[len(function_selection_string):])
+			space := strings.LastIndex(s, " ")
+			if space == -1 {
+				space = len(s)
+			}
+			lastTrigger = strings.TrimSpace(s[len(function_selection_string):space])
 		}
 	}
 
@@ -285,7 +301,11 @@ func main() {
 			`
 %s runs the test executable (default ./gshs_test.bash) repeatedly 
 with longer and longer hash suffix parameters supplied. A non-default
-command and args can be specified following any flags or "--".
+command and args can be specified following any flags or "--".  For
+example, if the a compiler change has broken the build and the change
+has been gated with a hash (see below), 
+	gossahash ./make.bash
+will search for a function whose miscompilation causes the problem.
 
 The hash suffix is made of 1 and 0 characters, expected to match the
 suffix of a hash of something interesting, like a function or variable
@@ -312,7 +332,7 @@ Swapping pass and fail can be used to selectively disable the
 minimum number of optimizations to allow the code to run.
 
 The %s command can be run as its own test with the -F flag, as in
-(prints about 100 long lines):
+(prints about 100 long lines, and demonstrates multi-point failure detection):
 
   %s %s -F 
 
