@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -134,8 +135,8 @@ var names []string = []string{
 	"hen",
 }
 
-func doit(name string) bool {
-	if os.Getenv("GOSSAHASH") == "" {
+func oldDoit(name string, param int) bool {
+	if os.Getenv(hash_ev_name) == "" {
 		// Default behavior is yes.
 		return true
 	}
@@ -143,26 +144,28 @@ func doit(name string) bool {
 	// We use this feature to do a binary search within a
 	// package to find a function that is incorrectly compiled.
 	hstr := ""
-	for _, b := range sha1.Sum([]byte(name)) {
+	hash := sha1.Sum([]byte(name))
+	for _, b := range hash[len(hash)-4:] {
 		hstr += fmt.Sprintf("%08b", b)
 	}
-	if strings.HasSuffix(hstr, os.Getenv("GOSSAHASH")) {
+
+	if strings.HasSuffix(hstr, os.Getenv(hash_ev_name)) {
 		for i := 7 & rand.Int(); i >= 0; i-- {
-			fmt.Printf("GOSSAHASH triggered %s\n", name)
+			fmt.Printf("%s triggered %s %s\n", hash_ev_name, name, hstr)
 		}
 		return true
 	}
 	// Iteratively try additional hashes to allow tests for
 	// multi-point failure.
 	for i := 0; true; i++ {
-		ev := fmt.Sprintf("GOSSAHASH%d", i)
+		ev := fmt.Sprintf("%s%d", hash_ev_name, i)
 		evv := os.Getenv(ev)
 		if evv == "" {
 			break
 		}
 		if strings.HasSuffix(hstr, evv) {
 			for i := 7 & rand.Int(); i >= 0; i-- {
-				fmt.Printf("%s triggered %s\n", ev, name)
+				fmt.Printf("%s triggered %s %s\n", ev, name, hstr)
 			}
 			return true
 		}
@@ -170,17 +173,169 @@ func doit(name string) bool {
 	return false
 }
 
+type hashAndMask struct {
+	// a hash h matches if (h^hash)&mask == 0
+	hash uint64
+	mask uint64
+	name string // base name, or base name + "0", "1", etc.
+}
+
+type HashDebug struct {
+	name    string        // base name of the flag/variable.
+	matches []hashAndMask // A hash matches if one of these matches.
+	yes, no bool
+}
+
+func toHashAndMask(s, varname string) hashAndMask {
+	l := len(s)
+	if l > 64 {
+		s = s[l-64:]
+		l = 64
+	}
+	m := ^(^uint64(0) << l)
+	h, err := strconv.ParseUint(s, 2, 64)
+	if err != nil {
+		panic(fmt.Errorf("Could not parse %s (=%s) as a binary number", varname, s))
+	}
+
+	return hashAndMask{name: varname, hash: h, mask: m}
+}
+
+// NewHashDebug returns a new hash-debug tester for the
+// environment variable ev.  If ev is not set, it returns
+// nil, allowing a lightweight check for normal-case behavior.
+func NewHashDebug(ev, s string) *HashDebug {
+	fmt.Printf("NewHashDebug(%s,%s)\n", ev, s)
+	if s == "" {
+		return nil
+	}
+
+	hd := &HashDebug{name: ev}
+	switch s[0] {
+	case 'y', 'Y':
+		hd.yes = true
+		return hd
+	case 'n', 'N':
+		hd.no = true
+		return hd
+	}
+	ss := strings.Split(s, sep)
+	hd.matches = append(hd.matches, toHashAndMask(ss[0], ev))
+	// hash searches may use additional EVs with 0, 1, 2, ... suffixes.
+	for i := 1; i < len(ss); i++ {
+		evi := fmt.Sprintf("%s%d", ev, i-1) // convention is extras begin indexing at zero
+		hd.matches = append(hd.matches, toHashAndMask(ss[i], evi))
+	}
+	return hd
+}
+
+func hashOf(pkgAndName string, param uint64) uint64 {
+	hbytes := sha1.Sum([]byte(pkgAndName))
+	hash := uint64(hbytes[7])<<56 + uint64(hbytes[6])<<48 +
+		uint64(hbytes[5])<<40 + uint64(hbytes[4])<<32 +
+		uint64(hbytes[3])<<24 + uint64(hbytes[2])<<16 +
+		uint64(hbytes[1])<<8 + uint64(hbytes[0])
+
+	if param != 0 {
+		// Because param is probably a line number, probably near zero,
+		// hash it up a little bit, but even so only the lower-order bits
+		// likely matter because search focuses on those.
+		p0 := param + uint64(hbytes[9]) + uint64(hbytes[10])<<8 +
+			uint64(hbytes[11])<<16 + uint64(hbytes[12])<<24
+
+		p1 := param + uint64(hbytes[13]) + uint64(hbytes[14])<<8 +
+			uint64(hbytes[15])<<16 + uint64(hbytes[16])<<24
+
+		param += p0 * p1
+		param ^= param>>17 ^ param<<47
+	}
+
+	return hash ^ param
+}
+
+// DebugHashMatch returns true if either the variable used to create d is
+// unset, or if its value is y, or if it is a suffix of the base-two
+// representation of the hash of pkgAndName.  If the variable is not nil,
+// then a true result is accompanied by stylized output to d.logfile, which
+// is used for automated bug search.
+func (d *HashDebug) DebugHashMatch(pkgAndName string) bool {
+	return d.DebugHashMatchParam(pkgAndName, 0)
+}
+
+// DebugHashMatchParam returns true if either the variable used to create d is
+// unset, or if its value is y, or if it is a suffix of the base-two
+// representation of the hash of pkgAndName and param. If the variable is not
+// nil, then a true result is accompanied by stylized output to d.logfile,
+// which is used for automated bug search.
+func (d *HashDebug) DebugHashMatchParam(pkgAndName string, param uint64) bool {
+	if d == nil {
+		return true
+	}
+	if d.no {
+		return false
+	}
+	if d.yes {
+		d.logDebugHashMatch(d.name, pkgAndName, "y", param)
+		return true
+	}
+
+	hash := hashOf(pkgAndName, param)
+
+	for _, m := range d.matches {
+		if (m.hash^hash)&m.mask == 0 {
+			hstr := ""
+			if hash == 0 {
+				hstr = "0"
+			} else {
+				for ; hash != 0; hash = hash >> 1 {
+					hstr = string('0'+byte(hash&1)) + hstr
+				}
+			}
+			d.logDebugHashMatch(m.name, pkgAndName, hstr, param)
+			return true
+		}
+	}
+	return false
+}
+
+func (d *HashDebug) logDebugHashMatch(varname, name, hstr string, param uint64) {
+	file := os.Stdout
+	if len(hstr) > 32 {
+		hstr = hstr[len(hstr)-32:]
+	}
+	// External tools depend on this string
+	if param == 0 {
+		fmt.Fprintf(file, "%s triggered %s %s\n", varname, name, hstr)
+	} else {
+		fmt.Fprintf(file, "%s triggered %s:%d %s\n", varname, name, param, hstr)
+	}
+}
+
+var doit = newDoit
+var hd *HashDebug
+
+func newDoit(name string, param int) bool {
+	return hd.DebugHashMatchParam(name, uint64(param))
+}
+
 // test fails when "doit" is true for exactly 7 3-letter names.
 // this simulates multiple triggers required for failure.
 func test() {
+	if old {
+		doit = oldDoit
+	} else {
+		gcd := os.Getenv("GOCOMPILEDEBUG")
+		li := strings.LastIndex(gcd, "=")
+		hd = NewHashDebug(hash_ev_name, gcd[li+1:])
+	}
 	rand.Seed(time.Now().UnixNano())
 	threeletters := 0
-	for _, w := range names {
-		if doit(w) && len(w) == 3 {
+	for i, w := range names {
+		if doit(w, i) && len(w) == 3 {
 			threeletters++
 		}
 	}
-	time.Sleep(1100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	if threeletters == 7 {
 		fmt.Println("FAIL!")
 		os.Exit(1)

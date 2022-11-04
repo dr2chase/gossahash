@@ -35,11 +35,12 @@ var (
 	logPrefix       string = "GSHS_LAST_" // Prefix on PASS/FAIL log files.
 	verbose         bool   = false
 	swapPassAndFail bool   = false
+	old             bool   = false
 	timeout         int    = 900 // Timeout in seconds to apply to command; failure if hit
 
 	// Name of the environment variable that contains the hash suffix to be matched against function name hashes.
-	hash_ev_name = "GOSSAHASH"
-	// Expect to see this in the output when a value for GOSSAHASH triggers SSA-compilation of a function.
+	hash_ev_name = "gossahash"
+	// Expect to see this in the output when a value for gossahash triggers SSA-compilation of a function.
 	function_selection_string     string
 	function_selection_logfile    string
 	function_selection_use_stdout bool = true  // Use stdout instead of a file (now default, old flag)
@@ -98,6 +99,18 @@ var hashes []string
 // are found.
 var next_singleton_hash_index int
 
+var envenvprefix = "GOCOMPILEDEBUG="
+
+var sep = "/"
+
+func newStyleEnvString() string {
+	ev := fmt.Sprintf("%s%s=%s", envenvprefix, hash_ev_name, suffix)
+	for i := 0; i < len(hashes); i++ {
+		ev += fmt.Sprintf("%s%s", sep, hashes[i])
+	}
+	return ev
+}
+
 // tryCmd runs the test command with suffix and all the hashes
 // assigned to environment variables of the form GOSSAHASH and
 // GOSSAHASH%d for [0:len(hashes)-1]
@@ -122,12 +135,16 @@ func tryCmd(suffix string) (output []byte, err error) {
 		extraEnv = append(extraEnv, ev)
 	}
 
-	ev := fmt.Sprintf("%s=%s", hash_ev_name, suffix)
-	extraEnv = append(extraEnv, ev)
-
-	for i := 0; i < len(hashes); i++ {
-		ev = fmt.Sprintf("%s%d=%s", hash_ev_name, i, hashes[i])
+	if old {
+		ev := fmt.Sprintf("%s=%s", hash_ev_name, suffix)
 		extraEnv = append(extraEnv, ev)
+
+		for i := 0; i < len(hashes); i++ {
+			ev = fmt.Sprintf("%s%d=%s", hash_ev_name, i, hashes[i])
+			extraEnv = append(extraEnv, ev)
+		}
+	} else {
+		extraEnv = append(extraEnv, newStyleEnvString())
 	}
 
 	extraEnv = append(extraEnv, commandLineEnv...)
@@ -273,15 +290,19 @@ func trySuffix(suffix string) int {
 }
 
 func main() {
+	hash_option_info := hash_ev_name + "/(if -O)" + strings.ToUpper(hash_ev_name)
+	hash_option_name := ""
+	fma := false
 	flag.IntVar(&timeout, "t", timeout, "timeout in seconds for running test script, 0=run till done. Negative timeout means timing out is a pass, not a failure")
 
 	// flag.Var(&args, "c", "executable file to run.\n"+
 	// 	"\tMay be repeated to supply leading args to command.\n\t") // default on next line
 
-	flag.StringVar(&hash_ev_name, "e", hash_ev_name, "name/prefix of environment variable communicating hash suffix")
+	flag.StringVar(&hash_option_name, "e", hash_option_info, "name/prefix of environment variable communicating hash suffix")
 
 	flag.BoolVar(&swapPassAndFail, "X", swapPassAndFail, "swap pass and fail for test script (default false)")
 	flag.BoolVar(&verbose, "v", verbose, "also print output of test script (default false)")
+	flag.BoolVar(&old, "O", old, "use old environment variable protocol")
 
 	flag.IntVar(&hashLimit, "n", hashLimit, "maximum hash suffix length to try before giving up")
 
@@ -293,6 +314,7 @@ func main() {
 	flag.BoolVar(&function_selection_use_file, "f", function_selection_use_file, "use file for 'triggered' communication (sets GSHS_LOGFILE)")
 
 	flag.BoolVar(&fail, "F", fail, "act as a test program")
+	flag.BoolVar(&fma, "fma", fma, "search for fma problems")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
@@ -371,6 +393,24 @@ func doit(name string) bool {
 	}
 
 	flag.Parse()
+
+	if hash_option_name == hash_option_info {
+		if old {
+			if fma {
+				fmt.Fprintf(os.Stderr, "-fma and -O are incompatible (-fma changes the environment variable)\n")
+				os.Exit(1)
+			}
+			hash_ev_name = strings.ToUpper(hash_ev_name)
+		} else if fma {
+			hash_ev_name = "fmahash"
+		}
+	} else {
+		if fma {
+			fmt.Fprintf(os.Stderr, "-fma and -e are incompatible (-fma changes the environment variable)\n")
+			os.Exit(1)
+		}
+		hash_ev_name = hash_option_name
+	}
 
 	var ok error
 	tmpdir, ok = ioutil.TempDir("", "gshstmp")
@@ -520,14 +560,22 @@ searchloop:
 
 	printGSF := func() {
 		if lastTrigger != "" {
-			fmt.Printf("GOSSAFUNC='%s' ", lastTrigger)
+			ci := strings.Index(lastTrigger, ":")
+			if ci == -1 {
+				ci = len(lastTrigger)
+			}
+			fmt.Printf("GOSSAFUNC='%s' ", lastTrigger[:ci])
 		}
 	}
 
 	if len(hashes) == 0 {
 		fmt.Printf("FINISHED, suggest this command line for debugging:\n")
 		printGSF()
-		fmt.Printf("%s=%s", hash_ev_name, string(suffix))
+		if old {
+			fmt.Printf("%s=%s", hash_ev_name, string(suffix))
+		} else {
+			fmt.Printf("%s", newStyleEnvString())
+		}
 		printCL()
 		fmt.Println()
 
@@ -579,11 +627,16 @@ searchloop:
 			hashes = append(hashes, temporarily_removed)
 		}
 		fmt.Printf("FINISHED, after filtering, suggest this command line for debugging:\n")
-		printGSF()
-		fmt.Printf("%s=%s", hash_ev_name, string(suffix))
 
-		for i := 0; i < len(hashes); i++ {
-			fmt.Printf(" %s%d=%s", hash_ev_name, i, hashes[i])
+		printGSF()
+		if old {
+			fmt.Printf("%s=%s", hash_ev_name, suffix)
+
+			for i := 0; i < len(hashes); i++ {
+				fmt.Printf(" %s%d=%s", hash_ev_name, i, hashes[i])
+			}
+		} else {
+			fmt.Printf("%s", newStyleEnvString())
 		}
 		printCL()
 		fmt.Println()
