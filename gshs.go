@@ -682,7 +682,7 @@ searchloop:
 		_, trigger := matchTrigger(output, hash_ev_name)
 		printPOS(trigger, "Problem is at")
 		for i := 0; i < len(hashes); i++ {
-			_, trigger = matchTrigger(output, fmt.Sprintf(" %s%d", hash_ev_name, i))
+			_, trigger = matchTrigger(output, fmt.Sprintf("%s%d", hash_ev_name, i))
 			printPOS(trigger, "and")
 		}
 	}
