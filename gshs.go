@@ -218,12 +218,34 @@ func tryCmd(suffix string) (output []byte, err error) {
 	return
 }
 
+// matchTrigger extracts hash trigger reports from the output.
+// repeats are collapsed, but counted in the returned map.  The
+// last match is also returned.
+func matchTrigger(output []byte, hash_ev_name string) (map[string]int, string) {
+	triggerPrefix := hash_ev_name + " triggered"
+	m := make(map[string]int)
+	var lastTrigger string
+	scanner := bufio.NewScanner(bytes.NewBuffer(output))
+	for scanner.Scan() {
+		s := scanner.Text()
+		if strings.Contains(s, triggerPrefix) {
+			m[s] = m[s] + 1
+			space := strings.LastIndex(s, " ")
+			if space == -1 {
+				space = len(s)
+			}
+			lastTrigger = strings.TrimSpace(s[len(triggerPrefix):space])
+		}
+	}
+	return m, lastTrigger
+}
+
 // trySuffix runs the test command passing it suffix as an argument,
 // and returns PASSED/FAILED/DONE/DONE0 based on return code and occurrences
 // of the function_selection_string within the output; if there is only
 // one and the command fails, then the search is done.
 // Appropriate log files and narrative are also produced.
-func trySuffix(suffix string) int {
+func trySuffix(suffix string) (int, []byte) {
 	output, error := tryCmd(suffix)
 
 	if function_selection_logfile != "" {
@@ -237,20 +259,9 @@ func trySuffix(suffix string) int {
 	// matching string into a map. Note the map contains the whole
 	// line, so varying output not included in the hash can prevent
 	// convergence on a single trigger line.
-	m := make(map[string]int)
-	scanner := bufio.NewScanner(bytes.NewBuffer(output))
-	for scanner.Scan() {
-		s := scanner.Text()
-		if strings.Contains(s, function_selection_string) {
-			m[s] = m[s] + 1
-			space := strings.LastIndex(s, " ")
-			if space == -1 {
-				space = len(s)
-			}
-			lastTrigger = strings.TrimSpace(s[len(function_selection_string):space])
-		}
-	}
 
+	var m map[string]int
+	m, lastTrigger = matchTrigger(output, hash_ev_name)
 	count := len(m)
 
 	// (error == nil) means success
@@ -276,17 +287,17 @@ func trySuffix(suffix string) int {
 		if count <= 1 {
 			fmt.Fprintf(os.Stdout, "Review %s for %sfailing run\n", lfn, prefix)
 			if count == 0 {
-				return DONE0
+				return DONE0, output
 			}
-			return DONE
+			return DONE, output
 		}
-		return FAILED
+		return FAILED, output
 	}
 	saveLogFile(logPrefix+prefix+"PASS.log", output)
 	if count == 0 {
-		return PASSED0
+		return PASSED0, output
 	}
-	return PASSED
+	return PASSED, output
 }
 
 func main() {
@@ -394,6 +405,13 @@ func doit(name string) bool {
 
 	flag.Parse()
 
+	// Choose differently each time run to make it easier
+	// to search for multiple failures; perhaps one is
+	// substantially easier to debug in isolation.
+	// TODO print this and also take it as a parameter; use it for the logfile name.
+	seed := time.Now().UnixNano()
+	rand.Seed(seed)
+
 	if hash_option_name == hash_option_info {
 		if old {
 			if fma {
@@ -419,7 +437,6 @@ func doit(name string) bool {
 		os.Exit(1)
 	}
 
-	function_selection_string = hash_ev_name + " triggered"
 	if function_selection_use_file {
 		function_selection_use_stdout = false
 		function_selection_logfile = filepath.Join(tmpdir, hash_ev_name+".triggered")
@@ -448,11 +465,6 @@ func doit(name string) bool {
 		args = args[1:]
 	}
 
-	// Choose differently each time run to make it easier
-	// to search for multiple failures; perhaps one is
-	// substantially easier to debug in isolation.
-	rand.Seed(time.Now().UnixNano())
-
 	// confirmed_suffix is a suffix that is confirmed
 	// to contain a failure.  The first confirmation is
 	// assumed to have occurred externally before this
@@ -468,7 +480,7 @@ searchloop:
 			b = t
 		}
 		suffix = a + confirmed_suffix
-		first_result := trySuffix(suffix)
+		first_result, _ := trySuffix(suffix)
 		switch first_result {
 		case FAILED:
 			// Suffix is confirmed to contain a failure,
@@ -501,7 +513,8 @@ searchloop:
 
 		// The a arm contained no failures, try the b arm.
 		suffix = b + confirmed_suffix
-		switch trySuffix(suffix) {
+		result, _ := trySuffix(suffix)
+		switch result {
 		case FAILED:
 			confirmed_suffix = suffix
 			continue
@@ -568,14 +581,14 @@ searchloop:
 		}
 	}
 
-	printPOS := func() {
+	printPOS := func(lastTrigger, intro string) {
 		posPfx := "POS="
 		if strings.HasPrefix(lastTrigger, posPfx) {
 			inlineLocs := strings.Split(lastTrigger[len(posPfx):], ";")
 			if len(inlineLocs) == 1 {
-				fmt.Printf("Problem is at %s\n", inlineLocs[0])
+				fmt.Printf("%s %s\n", intro, inlineLocs[0])
 			} else if len(inlineLocs) > 1 {
-				fmt.Printf("Problem is at:\n")
+				fmt.Printf("%s:\n", intro)
 				sfx := ""
 				for _, l := range inlineLocs {
 					fmt.Printf("\t%s%s\n", l, sfx)
@@ -596,7 +609,7 @@ searchloop:
 		}
 		printCL()
 		fmt.Println()
-		printPOS()
+		printPOS(lastTrigger, "Problem is at")
 	} else {
 		// Because the tests can be flaky, see if we accidentally included hashes that aren't
 		// really necessary.  This is a boring mechanical task that computers excel at...
@@ -611,6 +624,8 @@ searchloop:
 		temporarily_removed := hashes[len(hashes)-1]
 		hashes = hashes[0 : len(hashes)-1]
 		// suffix is initially the last value of GOSSAHASH
+		var result int
+		var output []byte
 
 		for i := len(hashes); i >= -1 && len(hashes) > 0; i-- {
 			// Special values for search:
@@ -624,7 +639,8 @@ searchloop:
 				temporarily_removed = hashes[i]
 				hashes[i] = t
 			}
-			switch trySuffix(suffix) {
+			result, output = trySuffix(suffix)
+			switch result {
 			case DONE0: // failed but GOSSAHASH triggered nothing
 				// needed neither GOSSAHASH nor the excluded one.
 				if len(hashes) > 1 { // cannot be zero, see loop condition.
@@ -644,6 +660,10 @@ searchloop:
 		if temporarily_removed != "" {
 			hashes = append(hashes, temporarily_removed)
 		}
+
+		fmt.Printf("Confirming filtered hash set triggers failure:\n")
+		result, output = trySuffix(suffix)
+
 		fmt.Printf("FINISHED, after filtering, suggest this command line for debugging:\n")
 
 		printGSF()
@@ -658,6 +678,12 @@ searchloop:
 		}
 		printCL()
 		fmt.Println()
-		printPOS()
+
+		_, trigger := matchTrigger(output, hash_ev_name)
+		printPOS(trigger, "Problem is at")
+		for i := 0; i < len(hashes); i++ {
+			_, trigger = matchTrigger(output, fmt.Sprintf(" %s%d", hash_ev_name, i))
+			printPOS(trigger, "and")
+		}
 	}
 }
