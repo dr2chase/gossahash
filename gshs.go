@@ -559,13 +559,31 @@ searchloop:
 	}
 
 	printGSF := func() {
-		if lastTrigger != "" {
+		if lastTrigger != "" && !strings.HasPrefix(lastTrigger, "POS=") {
 			ci := strings.Index(lastTrigger, ":")
 			if ci == -1 {
 				ci = len(lastTrigger)
 			}
 			fmt.Printf("GOSSAFUNC='%s' ", lastTrigger[:ci])
 		}
+	}
+
+	printPOS := func() {
+		posPfx := "POS="
+		if strings.HasPrefix(lastTrigger, posPfx) {
+			inlineLocs := strings.Split(lastTrigger[len(posPfx):], ";")
+			if len(inlineLocs) == 1 {
+				fmt.Printf("Problem is at %s\n", inlineLocs[0])
+			} else if len(inlineLocs) > 1 {
+				fmt.Printf("Problem is at:\n")
+				sfx := ""
+				for _, l := range inlineLocs {
+					fmt.Printf("\t%s%s\n", l, sfx)
+					sfx = " (inlined function)"
+				}
+			}
+		}
+
 	}
 
 	if len(hashes) == 0 {
@@ -578,7 +596,7 @@ searchloop:
 		}
 		printCL()
 		fmt.Println()
-
+		printPOS()
 	} else {
 		// Because the tests can be flaky, see if we accidentally included hashes that aren't
 		// really necessary.  This is a boring mechanical task that computers excel at...
@@ -640,5 +658,6 @@ searchloop:
 		}
 		printCL()
 		fmt.Println()
+		printPOS()
 	}
 }
