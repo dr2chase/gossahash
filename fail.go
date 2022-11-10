@@ -17,6 +17,7 @@ package main
 import (
 	"crypto/sha1"
 	"fmt"
+	"io"
 	"math/rand"
 	"os"
 	"strconv"
@@ -180,9 +181,15 @@ type hashAndMask struct {
 	name string // base name, or base name + "0", "1", etc.
 }
 
+type writeSyncer interface {
+	io.Writer
+	Sync() error
+}
+
 type HashDebug struct {
 	name    string        // base name of the flag/variable.
 	matches []hashAndMask // A hash matches if one of these matches.
+	logfile writeSyncer
 	yes, no bool
 }
 
@@ -299,7 +306,20 @@ func (d *HashDebug) DebugHashMatchParam(pkgAndName string, param uint64) bool {
 }
 
 func (d *HashDebug) logDebugHashMatch(varname, name, hstr string, param uint64) {
-	file := os.Stdout
+	file := d.logfile
+	if file == nil {
+		if tmpfile := os.Getenv("GSHS_LOGFILE"); tmpfile != "" {
+			var err error
+			file, err = os.OpenFile(tmpfile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+			if err != nil {
+				panic(fmt.Errorf("could not open hash-testing logfile %s", tmpfile))
+			}
+		}
+		if file == nil {
+			file = os.Stdout
+		}
+		d.logfile = file
+	}
 	if len(hstr) > 32 {
 		hstr = hstr[len(hstr)-32:]
 	}
@@ -336,8 +356,16 @@ func test() {
 		}
 	}
 	time.Sleep(50 * time.Millisecond)
-	if threeletters == 7 {
-		fmt.Println("FAIL!")
-		os.Exit(1)
+
+	if swapPassAndFail {
+		if threeletters != 7 {
+			fmt.Println("FAIL!")
+			os.Exit(1)
+		}
+	} else {
+		if threeletters == 7 {
+			fmt.Println("FAIL!")
+			os.Exit(1)
+		}
 	}
 }
