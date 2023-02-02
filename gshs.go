@@ -99,12 +99,18 @@ var hashes []string
 // are found.
 var next_singleton_hash_index int
 
-var envenvprefix = "GOCOMPILEDEBUG="
+const GCDprefix = "GOCOMPILEDEBUG="
+
+var envEnvPrefix = GCDprefix
+
+// hashPrefix is a string that precedes the hashcodes, for signalling
+// different sorts of hashing (e.g., full path name vs basename)
+var hashPrefix = ""
 
 var sep = "/"
 
 func newStyleEnvString() string {
-	ev := fmt.Sprintf("%s%s=%s", envenvprefix, hash_ev_name, suffix)
+	ev := fmt.Sprintf("%s%s=%s%s", envEnvPrefix, hash_ev_name, hashPrefix, suffix)
 	for i := 0; i < len(hashes); i++ {
 		ev += fmt.Sprintf("%s%s", sep, hashes[i])
 	}
@@ -279,11 +285,6 @@ func trySuffix(suffix string) (int, []byte) {
 		lfn := fmt.Sprintf("%s%sFAIL.%d.log", logPrefix, prefix, next_singleton_hash_index)
 		// lfn = filepath.Join(tmpdir, lfn)
 		saveLogFile(lfn, output)
-		if count < 4 {
-			for k, n := range m {
-				fmt.Fprintf(os.Stdout, "Trigger string is '%s', repeated %d times\n", k, n)
-			}
-		}
 		if count <= 1 {
 			fmt.Fprintf(os.Stdout, "Review %s for %sfailing run\n", lfn, prefix)
 			if count == 0 {
@@ -320,6 +321,7 @@ func main() {
 	flag.StringVar(&logPrefix, "l", logPrefix, "prefix of log file names ending ...{PASS,FAIL}.log")
 
 	flag.StringVar(&suffix, "P", suffix, "root of hash suffix to begin searching at (default empty)")
+	flag.StringVar(&hashPrefix, "H", hashPrefix, "string prepended to all hash encodings, for special hash interpretation/debugging")
 
 	flag.BoolVar(&function_selection_use_stdout, "s", function_selection_use_stdout, "use stdout for 'triggered' communication (obsolete, now default)")
 	flag.BoolVar(&function_selection_use_file, "f", function_selection_use_file, "use file for 'triggered' communication (sets GSHS_LOGFILE)")
@@ -448,11 +450,30 @@ func doit(name string) bool {
 		return
 	}
 
-	restArgs := flag.Args()
-	firstNotEnv := 0
-	for ; firstNotEnv < len(restArgs) && strings.Contains(restArgs[firstNotEnv], "="); firstNotEnv++ {
+	GCD := os.Getenv("GOCOMPILEDEBUG")
+	if GCD != "" {
+		envEnvPrefix = envEnvPrefix + GCD + ","
 	}
-	commandLineEnv = restArgs[:firstNotEnv]
+
+	restArgs := flag.Args()
+	var firstNotEnv int
+	var arg string
+	for firstNotEnv, arg = range restArgs {
+		if !strings.Contains(arg, "=") {
+			break
+		}
+		if !old && strings.HasPrefix(arg, GCDprefix) {
+			if len(arg) == len(GCDprefix) {
+				// if they did this, effect is to override the one in the environment,
+				// so reset anything inherited from there.
+				envEnvPrefix = GCDprefix
+			} else {
+				envEnvPrefix = envEnvPrefix + arg[len(GCDprefix):] + ","
+			}
+		} else {
+			commandLineEnv = append(commandLineEnv, arg)
+		}
+	}
 	args = append(args, restArgs[firstNotEnv:]...)
 
 	// Extract test command and args if supplied.
