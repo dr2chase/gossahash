@@ -187,10 +187,11 @@ type writeSyncer interface {
 }
 
 type HashDebug struct {
-	name    string        // base name of the flag/variable.
-	matches []hashAndMask // A hash matches if one of these matches.
-	logfile writeSyncer
-	yes, no bool
+	name     string        // base name of the flag/variable.
+	matches  []hashAndMask // A hash matches if one of these matches.
+	excludes []hashAndMask // explicitly excluded hash suffixes
+	logfile  writeSyncer
+	yes, no  bool
 }
 
 func toHashAndMask(s, varname string) hashAndMask {
@@ -226,12 +227,37 @@ func NewHashDebug(ev, s string) *HashDebug {
 		hd.no = true
 		return hd
 	}
-	ss := strings.Split(s, sep)
-	hd.matches = append(hd.matches, toHashAndMask(ss[0], ev))
+
+	ss := strings.Split(s, "/")
+	// first remove any leading exclusions; these are preceded with "-"
+	i := 0
+	for len(ss) > 0 {
+		s := ss[0]
+		if len(s) == 0 || len(s) > 0 && s[0] != '-' {
+			break
+		}
+		ss = ss[1:]
+		hd.excludes = append(hd.excludes, toHashAndMask(s[1:], fmt.Sprintf("%s%d", "HASH_EXCLUDE", i)))
+		i++
+	}
 	// hash searches may use additional EVs with 0, 1, 2, ... suffixes.
-	for i := 1; i < len(ss); i++ {
-		evi := fmt.Sprintf("%s%d", ev, i-1) // convention is extras begin indexing at zero
-		hd.matches = append(hd.matches, toHashAndMask(ss[i], evi))
+	i = 0
+	for _, s := range ss {
+		if s == "" {
+			if i != 0 || len(ss) > 1 && ss[1] != "" || len(ss) > 2 {
+				panic(fmt.Errorf("Empty hash match string for %s should be first (and only) one", ev))
+			}
+			// Special case of should match everything.
+			hd.matches = append(hd.matches, toHashAndMask("0", fmt.Sprintf("%s0", ev)))
+			hd.matches = append(hd.matches, toHashAndMask("1", fmt.Sprintf("%s1", ev)))
+			break
+		}
+		if i == 0 {
+			hd.matches = append(hd.matches, toHashAndMask(s, fmt.Sprintf("%s", ev)))
+		} else {
+			hd.matches = append(hd.matches, toHashAndMask(s, fmt.Sprintf("%s%d", ev, i-1)))
+		}
+		i++
 	}
 	return hd
 }
@@ -287,6 +313,12 @@ func (d *HashDebug) DebugHashMatchParam(pkgAndName string, param uint64) bool {
 	}
 
 	hash := hashOf(pkgAndName, param)
+
+	for _, m := range d.excludes {
+		if (m.hash^hash)&m.mask == 0 {
+			return false
+		}
+	}
 
 	for _, m := range d.matches {
 		if (m.hash^hash)&m.mask == 0 {

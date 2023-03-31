@@ -31,12 +31,13 @@ import (
 var (
 	hashLimit       int    = 30 // Maximum length of a hash string
 	test_command    string = "./gshs_test.bash"
-	suffix          string = ""           // The initial hash suffix assumed to cause failure.
+	initialSuffix   string = ""           // The initial hash suffix assumed to cause failure.
 	logPrefix       string = "GSHS_LAST_" // Prefix on PASS/FAIL log files.
 	verbose         bool   = false
 	swapPassAndFail bool   = false
 	old             bool   = false
 	timeout         int    = 900 // Timeout in seconds to apply to command; failure if hit
+	multiple        int    = 1   // Search for this many failures.
 
 	// Name of the environment variable that contains the hash suffix to be matched against function name hashes.
 	hash_ev_name = "gossahash"
@@ -45,8 +46,6 @@ var (
 	function_selection_logfile    string
 	function_selection_use_stdout bool = true  // Use stdout instead of a file (now default, old flag)
 	function_selection_use_file   bool = false // Use file instead of stdout
-
-	lastTrigger string
 
 	commandLineEnv []string // environment variables supplied on command line after flags, before command.
 
@@ -87,7 +86,11 @@ func (a *arg) Set(value string) error {
 	return nil
 }
 
+var excludes []string // hashes already seen to fail, now excluded
+
 type searchState struct {
+	suffix string
+
 	// The accumulated list of hashes that are either proven
 	// singleton triggers that contribute to failure, or proven/
 	// inferred to trigger at least one SSA-compilation that
@@ -99,6 +102,8 @@ type searchState struct {
 	// This counter advances as new singleton-triggering hashes
 	// are found.
 	next_singleton_hash_index int
+
+	lastTrigger string
 }
 
 const GCDprefix = "GOCOMPILEDEBUG="
@@ -111,8 +116,14 @@ var hashPrefix = ""
 
 var sep = "/"
 
-func (ss *searchState) newStyleEnvString() string {
-	ev := fmt.Sprintf("%s%s=%s%s", envEnvPrefix, hash_ev_name, hashPrefix, suffix)
+func (ss *searchState) newStyleEnvString(withExcludes bool) string {
+	ev := fmt.Sprintf("%s%s=%s", envEnvPrefix, hash_ev_name, hashPrefix)
+	if withExcludes {
+		for _, x := range excludes {
+			ev += "-" + x + sep
+		}
+	}
+	ev += ss.suffix
 	for i := 0; i < len(ss.hashes); i++ {
 		ev += fmt.Sprintf("%s%s", sep, ss.hashes[i])
 	}
@@ -152,7 +163,7 @@ func (ss *searchState) tryCmd(suffix string) (output []byte, err error) {
 			extraEnv = append(extraEnv, ev)
 		}
 	} else {
-		extraEnv = append(extraEnv, ss.newStyleEnvString())
+		extraEnv = append(extraEnv, ss.newStyleEnvString(true))
 	}
 
 	extraEnv = append(extraEnv, commandLineEnv...)
@@ -254,6 +265,7 @@ func matchTrigger(output []byte, hash_ev_name string) (map[string]int, string) {
 // one and the command fails, then the search is done.
 // Appropriate log files and narrative are also produced.
 func (ss *searchState) trySuffix(suffix string) (int, []byte) {
+	ss.suffix = suffix
 	output, error := ss.tryCmd(suffix)
 
 	if function_selection_logfile != "" {
@@ -269,7 +281,7 @@ func (ss *searchState) trySuffix(suffix string) (int, []byte) {
 	// convergence on a single trigger line.
 
 	var m map[string]int
-	m, lastTrigger = matchTrigger(output, hash_ev_name)
+	m, ss.lastTrigger = matchTrigger(output, hash_ev_name)
 	count := len(m)
 
 	// (error == nil) means success
@@ -322,7 +334,7 @@ func main() {
 
 	flag.StringVar(&logPrefix, "l", logPrefix, "prefix of log file names ending ...{PASS,FAIL}.log")
 
-	flag.StringVar(&suffix, "P", suffix, "root of hash suffix to begin searching at (default empty)")
+	flag.StringVar(&initialSuffix, "P", initialSuffix, "root of hash suffix to begin searching at (default empty)")
 	flag.StringVar(&hashPrefix, "H", hashPrefix, "string prepended to all hash encodings, for special hash interpretation/debugging")
 
 	flag.BoolVar(&function_selection_use_stdout, "s", function_selection_use_stdout, "use stdout for 'triggered' communication (obsolete, now default)")
@@ -330,6 +342,7 @@ func main() {
 
 	flag.BoolVar(&fail, "F", fail, "act as a test program")
 	flag.BoolVar(&fma, "fma", fma, "search for fma problems")
+	flag.IntVar(&multiple, "M", multiple, "stop after finding this many failures (0 for don't stop)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
@@ -488,12 +501,36 @@ func doit(name string) bool {
 		args = args[1:]
 	}
 
+	sss := []*searchState{}
 	ss := &searchState{}
-
-	if !ss.search(suffix) {
-
+	for {
+		if !ss.search(initialSuffix) {
+			fmt.Printf("FLAKY TEST OR BAD SEARCH\n")
+			break
+		} else {
+			sss = append(sss, ss)
+			multiple--
+			if multiple == 0 {
+				break
+			}
+			excludes = append(excludes, ss.suffix)
+			ss = &searchState{}
+			result, _ := ss.trySuffix(initialSuffix)
+			if result == PASSED || result == PASSED0 {
+				fmt.Printf("NO MORE FAILURES\n")
+				break
+			}
+		}
 	}
 
+	excludes = nil
+
+	for _, ss := range sss {
+		ss.finish()
+	}
+}
+
+func (ss *searchState) finish() {
 	printCL := func() {
 		for _, e := range commandLineEnv {
 			fmt.Printf(" %s", e)
@@ -503,14 +540,13 @@ func doit(name string) bool {
 			fmt.Printf(" %s", e)
 		}
 	}
-
 	printGSF := func() {
-		if lastTrigger != "" && !strings.HasPrefix(lastTrigger, "POS=") {
-			ci := strings.Index(lastTrigger, ":")
+		if ss.lastTrigger != "" && !strings.HasPrefix(ss.lastTrigger, "POS=") {
+			ci := strings.Index(ss.lastTrigger, ":")
 			if ci == -1 {
-				ci = len(lastTrigger)
+				ci = len(ss.lastTrigger)
 			}
-			fmt.Printf("GOSSAFUNC='%s' ", lastTrigger[:ci])
+			fmt.Printf("GOSSAFUNC='%s' ", ss.lastTrigger[:ci])
 		}
 	}
 
@@ -536,18 +572,18 @@ func doit(name string) bool {
 		fmt.Printf("FINISHED, suggest this command line for debugging:\n")
 		printGSF()
 		if old {
-			fmt.Printf("%s=%s", hash_ev_name, string(suffix))
+			fmt.Printf("%s=%s", hash_ev_name, string(ss.suffix))
 		} else {
-			fmt.Printf("%s", ss.newStyleEnvString())
+			fmt.Printf("%s", ss.newStyleEnvString(false))
 		}
 		printCL()
 		fmt.Println()
-		printPOS(lastTrigger, "Problem is at")
+		printPOS(ss.lastTrigger, "Problem is at")
 	} else {
 		// Because the tests can be flaky, see if we accidentally included hashes that aren't
 		// really necessary.  This is a boring mechanical task that computers excel at...
 
-		fmt.Printf("Before filtering, multiple hashes required for failure:\n%s=%s", hash_ev_name, suffix)
+		fmt.Printf("Before filtering, multiple hashes required for failure:\n%s=%s", hash_ev_name, ss.suffix)
 		for i, h := range ss.hashes {
 			fmt.Printf(" %s%d=%s", hash_ev_name, i, h)
 		}
@@ -566,22 +602,22 @@ func doit(name string) bool {
 			// hashes[-1] == suffix
 			t := temporarily_removed
 			if i == -1 {
-				temporarily_removed = suffix
-				suffix = t
+				temporarily_removed = ss.suffix
+				ss.suffix = t
 			} else if i < len(ss.hashes) {
 				temporarily_removed = ss.hashes[i]
 				ss.hashes[i] = t
 			}
-			result, output = ss.trySuffix(suffix)
+			result, output = ss.trySuffix(ss.suffix)
 			switch result {
 			case DONE0: // failed but GOSSAHASH triggered nothing
 				// needed neither GOSSAHASH nor the excluded one.
 				if len(ss.hashes) > 1 { // cannot be zero, see loop condition.
 					temporarily_removed = ""
-					suffix = ss.hashes[len(ss.hashes)-1]
+					ss.suffix = ss.hashes[len(ss.hashes)-1]
 					ss.hashes = nil // exit with only suffix
 				} else {
-					suffix = ss.hashes[len(ss.hashes)-1]
+					ss.suffix = ss.hashes[len(ss.hashes)-1]
 					temporarily_removed = ss.hashes[len(ss.hashes)-2]
 					ss.hashes = ss.hashes[0 : len(ss.hashes)-2]
 				}
@@ -595,19 +631,19 @@ func doit(name string) bool {
 		}
 
 		fmt.Printf("Confirming filtered hash set triggers failure:\n")
-		result, output = ss.trySuffix(suffix)
+		result, output = ss.trySuffix(ss.suffix)
 
 		fmt.Printf("FINISHED, after filtering, suggest this command line for debugging:\n")
 
 		printGSF()
 		if old {
-			fmt.Printf("%s=%s", hash_ev_name, suffix)
+			fmt.Printf("%s=%s", hash_ev_name, ss.suffix)
 
 			for i, h := range ss.hashes {
 				fmt.Printf(" %s%d=%s", hash_ev_name, i, h)
 			}
 		} else {
-			fmt.Printf("%s", ss.newStyleEnvString())
+			fmt.Printf("%s", ss.newStyleEnvString(false))
 		}
 		printCL()
 		fmt.Println()
@@ -632,14 +668,13 @@ func (ss *searchState) search(confirmed_suffix string) bool {
 		if 0 == 8192&rand.Int() {
 			a, b = b, a
 		}
-		suffix = a + confirmed_suffix
-		first_result, _ := ss.trySuffix(suffix)
+		first_result, _ := ss.trySuffix(a + confirmed_suffix)
 		switch first_result {
 		case FAILED:
 			// Suffix is confirmed to contain a failure,
 			// but there is more than one match (function compiled)
 			// Record this confirmation and continue the search.
-			confirmed_suffix = suffix
+			confirmed_suffix = ss.suffix
 			continue
 
 		case PASSED0:
@@ -659,17 +694,16 @@ func (ss *searchState) search(confirmed_suffix string) bool {
 			}
 			// record this discovery and move on to the next one.
 			confirmed_suffix = ss.hashes[ss.next_singleton_hash_index]
-			ss.hashes[ss.next_singleton_hash_index] = suffix
+			ss.hashes[ss.next_singleton_hash_index] = ss.suffix
 			ss.next_singleton_hash_index++
 			continue
 		}
 
 		// The a arm contained no failures, try the b arm.
-		suffix = b + confirmed_suffix
-		result, _ := ss.trySuffix(suffix)
+		result, _ := ss.trySuffix(b + confirmed_suffix)
 		switch result {
 		case FAILED:
-			confirmed_suffix = suffix
+			confirmed_suffix = ss.suffix
 			continue
 		case PASSED:
 			if first_result == PASSED {
@@ -706,7 +740,7 @@ func (ss *searchState) search(confirmed_suffix string) bool {
 			j := rand.Intn(len(ss.hashes)-ss.next_singleton_hash_index) + ss.next_singleton_hash_index
 			confirmed_suffix = ss.hashes[j]
 			ss.hashes[j] = ss.hashes[ss.next_singleton_hash_index]
-			ss.hashes[ss.next_singleton_hash_index] = suffix
+			ss.hashes[ss.next_singleton_hash_index] = ss.suffix
 			ss.next_singleton_hash_index++
 			continue
 		}
