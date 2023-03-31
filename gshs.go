@@ -87,17 +87,19 @@ func (a *arg) Set(value string) error {
 	return nil
 }
 
-// The accumulated list of hashes that are either proven
-// singleton triggers that contribute to failure, or proven/
-// inferred to trigger at least one SSA-compilation that
-// contributes to failure.
-var hashes []string
+type searchState struct {
+	// The accumulated list of hashes that are either proven
+	// singleton triggers that contribute to failure, or proven/
+	// inferred to trigger at least one SSA-compilation that
+	// contributes to failure.
+	hashes []string
 
-// hashes before  this index correspond to a single function
-// whose compilation is necessary to trigger a failure.
-// This counter advances as new singleton-triggering hashes
-// are found.
-var next_singleton_hash_index int
+	// hashes before  this index correspond to a single function
+	// whose compilation is necessary to trigger a failure.
+	// This counter advances as new singleton-triggering hashes
+	// are found.
+	next_singleton_hash_index int
+}
 
 const GCDprefix = "GOCOMPILEDEBUG="
 
@@ -109,10 +111,10 @@ var hashPrefix = ""
 
 var sep = "/"
 
-func newStyleEnvString() string {
+func (ss *searchState) newStyleEnvString() string {
 	ev := fmt.Sprintf("%s%s=%s%s", envEnvPrefix, hash_ev_name, hashPrefix, suffix)
-	for i := 0; i < len(hashes); i++ {
-		ev += fmt.Sprintf("%s%s", sep, hashes[i])
+	for i := 0; i < len(ss.hashes); i++ {
+		ev += fmt.Sprintf("%s%s", sep, ss.hashes[i])
 	}
 	return ev
 }
@@ -124,7 +126,7 @@ func newStyleEnvString() string {
 // killed after that many seconds (to help with bugs that exhibit
 // as an infinite loop), otherwise it runs to completion and the
 // error code and output are captured and returned.
-func tryCmd(suffix string) (output []byte, err error) {
+func (ss *searchState) tryCmd(suffix string) (output []byte, err error) {
 	cmd := exec.Command(test_command)
 	cmd.Args = append(cmd.Args, args...)
 
@@ -145,12 +147,12 @@ func tryCmd(suffix string) (output []byte, err error) {
 		ev := fmt.Sprintf("%s=%s", hash_ev_name, suffix)
 		extraEnv = append(extraEnv, ev)
 
-		for i := 0; i < len(hashes); i++ {
-			ev = fmt.Sprintf("%s%d=%s", hash_ev_name, i, hashes[i])
+		for i := 0; i < len(ss.hashes); i++ {
+			ev = fmt.Sprintf("%s%d=%s", hash_ev_name, i, ss.hashes[i])
 			extraEnv = append(extraEnv, ev)
 		}
 	} else {
-		extraEnv = append(extraEnv, newStyleEnvString())
+		extraEnv = append(extraEnv, ss.newStyleEnvString())
 	}
 
 	extraEnv = append(extraEnv, commandLineEnv...)
@@ -251,8 +253,8 @@ func matchTrigger(output []byte, hash_ev_name string) (map[string]int, string) {
 // of the function_selection_string within the output; if there is only
 // one and the command fails, then the search is done.
 // Appropriate log files and narrative are also produced.
-func trySuffix(suffix string) (int, []byte) {
-	output, error := tryCmd(suffix)
+func (ss *searchState) trySuffix(suffix string) (int, []byte) {
+	output, error := ss.tryCmd(suffix)
 
 	if function_selection_logfile != "" {
 		outputf, errorf := ioutil.ReadFile(function_selection_logfile)
@@ -282,7 +284,7 @@ func trySuffix(suffix string) (int, []byte) {
 		}
 		// we like errors.
 		fmt.Fprintf(os.Stdout, "%s %sfailed (%d distinct triggers): %s\n", test_command, prefix, count, why)
-		lfn := fmt.Sprintf("%s%sFAIL.%d.log", logPrefix, prefix, next_singleton_hash_index)
+		lfn := fmt.Sprintf("%s%sFAIL.%d.log", logPrefix, prefix, ss.next_singleton_hash_index)
 		// lfn = filepath.Join(tmpdir, lfn)
 		saveLogFile(lfn, output)
 		if count <= 1 {
@@ -486,100 +488,10 @@ func doit(name string) bool {
 		args = args[1:]
 	}
 
-	// confirmed_suffix is a suffix that is confirmed
-	// to contain a failure.  The first confirmation is
-	// assumed to have occurred externally before this
-	// program was run.
-	confirmed_suffix := suffix
-searchloop:
-	for len(confirmed_suffix) < hashLimit {
-		a := "0"
-		b := "1"
-		if 0 == 8192&rand.Int() {
-			t := a
-			a = b
-			b = t
-		}
-		suffix = a + confirmed_suffix
-		first_result, _ := trySuffix(suffix)
-		switch first_result {
-		case FAILED:
-			// Suffix is confirmed to contain a failure,
-			// but there is more than one match (function compiled)
-			// Record this confirmation and continue the search.
-			confirmed_suffix = suffix
-			continue
+	ss := &searchState{}
 
-		case PASSED0:
-		case PASSED:
-			// Suffix does not trigger a failure, so try
-			// prepending a "1" instead, below.
-		case DONE0:
-			// Treat this like a "pass" -- this hashcode is not useful for failure.
+	if !ss.search(suffix) {
 
-		case DONE:
-			// suffix caused exactly one function to be optimized
-			// and the test also failed.
-			if next_singleton_hash_index == len(hashes) {
-				// In this case all confirmed searches have yielded
-				// singleton instances and we are done.
-				break searchloop
-			}
-			// record this discovery and move on to the next one.
-			confirmed_suffix = hashes[next_singleton_hash_index]
-			hashes[next_singleton_hash_index] = suffix
-			next_singleton_hash_index++
-			continue
-		}
-
-		// The a arm contained no failures, try the b arm.
-		suffix = b + confirmed_suffix
-		result, _ := trySuffix(suffix)
-		switch result {
-		case FAILED:
-			confirmed_suffix = suffix
-			continue
-		case PASSED:
-			if first_result == PASSED {
-				fmt.Fprintf(os.Stdout, "Both trials unexpectedly succeeded\n")
-				// 0xyz and 1xyz both succeeded alone, but xyz failed.
-				// Failure therefore requires at least 2 hits, one in
-				// 0xyz and one in 1xyz.  Therefore, put 1xyz in the set
-				// of confirmed (i.e., contains a non-isolated failure)
-				// mark 0xyz as confirmed for local search, and continue.
-				if 0 == 8192&rand.Int() {
-					t := a
-					a = b
-					b = t
-				}
-				hashes = append(hashes, b+confirmed_suffix)
-				confirmed_suffix = a + confirmed_suffix
-				continue
-			}
-			fallthrough
-
-		case PASSED0, DONE0:
-			// If we are here, the test is flaky.
-			fmt.Fprintf(os.Stdout, "Combination of empty and pass, discard path (test is flaky)\n")
-			if next_singleton_hash_index == len(hashes) {
-				break searchloop
-			}
-			confirmed_suffix = hashes[len(hashes)-1]
-			hashes = hashes[0 : len(hashes)-1]
-			continue
-
-		case DONE:
-			if next_singleton_hash_index == len(hashes) {
-				break searchloop
-			}
-			// Randomly choose another place to work.
-			j := rand.Intn(len(hashes) - next_singleton_hash_index)
-			confirmed_suffix = hashes[next_singleton_hash_index+j]
-			hashes[next_singleton_hash_index+j] = hashes[next_singleton_hash_index]
-			hashes[next_singleton_hash_index] = suffix
-			next_singleton_hash_index++
-			continue
-		}
 	}
 
 	printCL := func() {
@@ -620,13 +532,13 @@ searchloop:
 
 	}
 
-	if len(hashes) == 0 {
+	if len(ss.hashes) == 0 {
 		fmt.Printf("FINISHED, suggest this command line for debugging:\n")
 		printGSF()
 		if old {
 			fmt.Printf("%s=%s", hash_ev_name, string(suffix))
 		} else {
-			fmt.Printf("%s", newStyleEnvString())
+			fmt.Printf("%s", ss.newStyleEnvString())
 		}
 		printCL()
 		fmt.Println()
@@ -636,19 +548,19 @@ searchloop:
 		// really necessary.  This is a boring mechanical task that computers excel at...
 
 		fmt.Printf("Before filtering, multiple hashes required for failure:\n%s=%s", hash_ev_name, suffix)
-		for i := 0; i < len(hashes); i++ {
-			fmt.Printf(" %s%d=%s", hash_ev_name, i, hashes[i])
+		for i, h := range ss.hashes {
+			fmt.Printf(" %s%d=%s", hash_ev_name, i, h)
 		}
 		fmt.Println()
 
 		// Next filter the hashes to see if any can be excluded:
-		temporarily_removed := hashes[len(hashes)-1]
-		hashes = hashes[0 : len(hashes)-1]
+		temporarily_removed := ss.hashes[len(ss.hashes)-1]
+		ss.hashes = ss.hashes[0 : len(ss.hashes)-1]
 		// suffix is initially the last value of GOSSAHASH
 		var result int
 		var output []byte
 
-		for i := len(hashes); i >= -1 && len(hashes) > 0; i-- {
+		for i := len(ss.hashes); i >= -1 && len(ss.hashes) > 0; i-- {
 			// Special values for search:
 			// hashes[len(hashes)] == temporarily_removed,
 			// hashes[-1] == suffix
@@ -656,34 +568,34 @@ searchloop:
 			if i == -1 {
 				temporarily_removed = suffix
 				suffix = t
-			} else if i < len(hashes) {
-				temporarily_removed = hashes[i]
-				hashes[i] = t
+			} else if i < len(ss.hashes) {
+				temporarily_removed = ss.hashes[i]
+				ss.hashes[i] = t
 			}
-			result, output = trySuffix(suffix)
+			result, output = ss.trySuffix(suffix)
 			switch result {
 			case DONE0: // failed but GOSSAHASH triggered nothing
 				// needed neither GOSSAHASH nor the excluded one.
-				if len(hashes) > 1 { // cannot be zero, see loop condition.
+				if len(ss.hashes) > 1 { // cannot be zero, see loop condition.
 					temporarily_removed = ""
-					suffix = hashes[len(hashes)-1]
-					hashes = nil // exit with only suffix
+					suffix = ss.hashes[len(ss.hashes)-1]
+					ss.hashes = nil // exit with only suffix
 				} else {
-					suffix = hashes[len(hashes)-1]
-					temporarily_removed = hashes[len(hashes)-2]
-					hashes = hashes[0 : len(hashes)-2]
+					suffix = ss.hashes[len(ss.hashes)-1]
+					temporarily_removed = ss.hashes[len(ss.hashes)-2]
+					ss.hashes = ss.hashes[0 : len(ss.hashes)-2]
 				}
 			case DONE, FAILED: // ought not see failed, but never mind.
-				temporarily_removed = hashes[len(hashes)-1]
-				hashes = hashes[0 : len(hashes)-1]
+				temporarily_removed = ss.hashes[len(ss.hashes)-1]
+				ss.hashes = ss.hashes[0 : len(ss.hashes)-1]
 			}
 		}
 		if temporarily_removed != "" {
-			hashes = append(hashes, temporarily_removed)
+			ss.hashes = append(ss.hashes, temporarily_removed)
 		}
 
 		fmt.Printf("Confirming filtered hash set triggers failure:\n")
-		result, output = trySuffix(suffix)
+		result, output = ss.trySuffix(suffix)
 
 		fmt.Printf("FINISHED, after filtering, suggest this command line for debugging:\n")
 
@@ -691,20 +603,113 @@ searchloop:
 		if old {
 			fmt.Printf("%s=%s", hash_ev_name, suffix)
 
-			for i := 0; i < len(hashes); i++ {
-				fmt.Printf(" %s%d=%s", hash_ev_name, i, hashes[i])
+			for i, h := range ss.hashes {
+				fmt.Printf(" %s%d=%s", hash_ev_name, i, h)
 			}
 		} else {
-			fmt.Printf("%s", newStyleEnvString())
+			fmt.Printf("%s", ss.newStyleEnvString())
 		}
 		printCL()
 		fmt.Println()
 
 		_, trigger := matchTrigger(output, hash_ev_name)
 		printPOS(trigger, "Problem is at")
-		for i := 0; i < len(hashes); i++ {
+		for i := range ss.hashes {
 			_, trigger = matchTrigger(output, fmt.Sprintf("%s%d", hash_ev_name, i))
 			printPOS(trigger, "and")
 		}
 	}
+}
+
+func (ss *searchState) search(confirmed_suffix string) bool {
+	// confirmed_suffix is a suffix that is confirmed
+	// to contain a failure.  The first confirmation is
+	// assumed to have occurred externally before this
+	// program was run.
+	for len(confirmed_suffix) < hashLimit {
+		a := "0"
+		b := "1"
+		if 0 == 8192&rand.Int() {
+			a, b = b, a
+		}
+		suffix = a + confirmed_suffix
+		first_result, _ := ss.trySuffix(suffix)
+		switch first_result {
+		case FAILED:
+			// Suffix is confirmed to contain a failure,
+			// but there is more than one match (function compiled)
+			// Record this confirmation and continue the search.
+			confirmed_suffix = suffix
+			continue
+
+		case PASSED0:
+		case PASSED:
+			// Suffix does not trigger a failure, so try
+			// prepending a "1" instead, below.
+		case DONE0:
+			// Treat this like a "pass" -- this hashcode is not useful for failure.
+
+		case DONE:
+			// suffix caused exactly one function to be optimized
+			// and the test also failed.
+			if ss.next_singleton_hash_index == len(ss.hashes) {
+				// In this case all confirmed searches have yielded
+				// singleton instances and we are done.
+				return true
+			}
+			// record this discovery and move on to the next one.
+			confirmed_suffix = ss.hashes[ss.next_singleton_hash_index]
+			ss.hashes[ss.next_singleton_hash_index] = suffix
+			ss.next_singleton_hash_index++
+			continue
+		}
+
+		// The a arm contained no failures, try the b arm.
+		suffix = b + confirmed_suffix
+		result, _ := ss.trySuffix(suffix)
+		switch result {
+		case FAILED:
+			confirmed_suffix = suffix
+			continue
+		case PASSED:
+			if first_result == PASSED {
+				fmt.Fprintf(os.Stdout, "Both trials unexpectedly succeeded\n")
+				// 0xyz and 1xyz both succeeded alone, but xyz failed.
+				// Failure therefore requires at least 2 hits, one in
+				// 0xyz and one in 1xyz.  Therefore, put 1xyz in the set
+				// of confirmed (i.e., contains a non-isolated failure)
+				// mark 0xyz as confirmed for local search, and continue.
+				if 0 == 8192&rand.Int() {
+					a, b = b, a
+				}
+				ss.hashes = append(ss.hashes, b+confirmed_suffix)
+				confirmed_suffix = a + confirmed_suffix
+				continue
+			}
+			fallthrough
+
+		case PASSED0, DONE0:
+			// If we are here, the test is flaky.
+			fmt.Fprintf(os.Stdout, "Combination of empty and pass, discard path (test is flaky)\n")
+			if ss.next_singleton_hash_index == len(ss.hashes) {
+				return false
+			}
+			confirmed_suffix = ss.hashes[len(ss.hashes)-1]
+			ss.hashes = ss.hashes[0 : len(ss.hashes)-1]
+			continue
+
+		case DONE:
+			if ss.next_singleton_hash_index == len(ss.hashes) {
+				return true
+			}
+			// Randomly choose another place to work.
+			j := rand.Intn(len(ss.hashes)-ss.next_singleton_hash_index) + ss.next_singleton_hash_index
+			confirmed_suffix = ss.hashes[j]
+			ss.hashes[j] = ss.hashes[ss.next_singleton_hash_index]
+			ss.hashes[ss.next_singleton_hash_index] = suffix
+			ss.next_singleton_hash_index++
+			continue
+		}
+	}
+	return false
 }
