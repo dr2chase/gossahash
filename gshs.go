@@ -103,7 +103,9 @@ type searchState struct {
 	// are found.
 	next_singleton_hash_index int
 
-	lastTrigger string
+	lastTrigger     string
+	lastOutput      []byte
+	withoutExcludes bool // initially, false == "with excludes"
 }
 
 var initialEnvEnvPrefix = "GOCOMPILEDEBUG="
@@ -154,7 +156,7 @@ func (ss *searchState) tryCmd(suffix string) (output []byte, err error) {
 		extraEnv = append(extraEnv, ev)
 	}
 
-	extraEnv = append(extraEnv, ss.newStyleEnvString(true))
+	extraEnv = append(extraEnv, ss.newStyleEnvString(!ss.withoutExcludes))
 
 	extraEnv = append(extraEnv, commandLineEnv...)
 
@@ -451,6 +453,11 @@ The %s command can be run as its own test with the -F flag, as in
 			break
 		} else {
 			sss = append(sss, ss)
+			// clean up multiple hash matches; this gives better output,
+			// also makes excludes more precise when reporting multiple errors.
+			ss.withoutExcludes = true
+			ss.filter()
+
 			multiple--
 			if multiple == 0 {
 				break
@@ -482,6 +489,64 @@ func printCL() {
 	fmt.Printf(" %s", test_command)
 	for _, e := range args {
 		fmt.Printf(" %s", e)
+	}
+}
+
+func (ss *searchState) filter() {
+	if len(ss.hashes) > 0 {
+		// Because the tests can be flaky, see if we accidentally included hashes that aren't
+		// really necessary.  This is a boring mechanical task that computers excel at...
+
+		fmt.Printf("Before filtering, multiple hashes required for failure:\n%s=%s", hash_ev_name, ss.suffix)
+		for i, h := range ss.hashes {
+			fmt.Printf(" %s%d=%s", hash_ev_name, i, h)
+		}
+		fmt.Println()
+
+		// Next filter the hashes to see if any can be excluded:
+		temporarily_removed := ss.hashes[len(ss.hashes)-1]
+		ss.hashes = ss.hashes[0 : len(ss.hashes)-1]
+		// suffix is initially the last value of GOSSAHASH
+		var result int
+
+		for i := len(ss.hashes); i >= -1 && len(ss.hashes) > 0; i-- {
+			// Special values for search:
+			// hashes[len(hashes)] == temporarily_removed,
+			// hashes[-1] == suffix
+			t := temporarily_removed
+			if i == -1 {
+				temporarily_removed = ss.suffix
+				ss.suffix = t
+			} else if i < len(ss.hashes) {
+				temporarily_removed = ss.hashes[i]
+				ss.hashes[i] = t
+			}
+			result, _ = ss.trySuffix(ss.suffix)
+			switch result {
+			case DONE0: // failed but GOSSAHASH triggered nothing
+				// needed neither GOSSAHASH nor the excluded one.
+				if len(ss.hashes) > 1 { // cannot be zero, see loop condition.
+					temporarily_removed = ""
+					ss.suffix = ss.hashes[len(ss.hashes)-1]
+					ss.hashes = nil // exit with only suffix
+				} else {
+					ss.suffix = ss.hashes[len(ss.hashes)-1]
+					temporarily_removed = ss.hashes[len(ss.hashes)-2]
+					ss.hashes = ss.hashes[0 : len(ss.hashes)-2]
+				}
+			case DONE, FAILED: // ought not see failed, but never mind.
+				temporarily_removed = ss.hashes[len(ss.hashes)-1]
+				ss.hashes = ss.hashes[0 : len(ss.hashes)-1]
+			}
+		}
+		if temporarily_removed != "" {
+			ss.hashes = append(ss.hashes, temporarily_removed)
+		}
+
+		fmt.Printf("Confirming filtered hash set triggers failure:\n")
+		_, ss.lastOutput = ss.trySuffix(ss.suffix)
+	} else {
+		fmt.Printf("Not filtering, single point failure\n")
 	}
 }
 
@@ -522,59 +587,6 @@ func (ss *searchState) finish() {
 		fmt.Println()
 		printPOS(ss.lastTrigger, "Problem is at")
 	} else {
-		// Because the tests can be flaky, see if we accidentally included hashes that aren't
-		// really necessary.  This is a boring mechanical task that computers excel at...
-
-		fmt.Printf("Before filtering, multiple hashes required for failure:\n%s=%s", hash_ev_name, ss.suffix)
-		for i, h := range ss.hashes {
-			fmt.Printf(" %s%d=%s", hash_ev_name, i, h)
-		}
-		fmt.Println()
-
-		// Next filter the hashes to see if any can be excluded:
-		temporarily_removed := ss.hashes[len(ss.hashes)-1]
-		ss.hashes = ss.hashes[0 : len(ss.hashes)-1]
-		// suffix is initially the last value of GOSSAHASH
-		var result int
-		var output []byte
-
-		for i := len(ss.hashes); i >= -1 && len(ss.hashes) > 0; i-- {
-			// Special values for search:
-			// hashes[len(hashes)] == temporarily_removed,
-			// hashes[-1] == suffix
-			t := temporarily_removed
-			if i == -1 {
-				temporarily_removed = ss.suffix
-				ss.suffix = t
-			} else if i < len(ss.hashes) {
-				temporarily_removed = ss.hashes[i]
-				ss.hashes[i] = t
-			}
-			result, output = ss.trySuffix(ss.suffix)
-			switch result {
-			case DONE0: // failed but GOSSAHASH triggered nothing
-				// needed neither GOSSAHASH nor the excluded one.
-				if len(ss.hashes) > 1 { // cannot be zero, see loop condition.
-					temporarily_removed = ""
-					ss.suffix = ss.hashes[len(ss.hashes)-1]
-					ss.hashes = nil // exit with only suffix
-				} else {
-					ss.suffix = ss.hashes[len(ss.hashes)-1]
-					temporarily_removed = ss.hashes[len(ss.hashes)-2]
-					ss.hashes = ss.hashes[0 : len(ss.hashes)-2]
-				}
-			case DONE, FAILED: // ought not see failed, but never mind.
-				temporarily_removed = ss.hashes[len(ss.hashes)-1]
-				ss.hashes = ss.hashes[0 : len(ss.hashes)-1]
-			}
-		}
-		if temporarily_removed != "" {
-			ss.hashes = append(ss.hashes, temporarily_removed)
-		}
-
-		fmt.Printf("Confirming filtered hash set triggers failure:\n")
-		result, output = ss.trySuffix(ss.suffix)
-
 		fmt.Printf("FINISHED, after filtering, suggest this command line for debugging:\n")
 
 		printGSF()
@@ -582,6 +594,7 @@ func (ss *searchState) finish() {
 		printCL()
 		fmt.Println()
 
+		output := ss.lastOutput
 		_, trigger := matchTrigger(output, hash_ev_name)
 		printPOS(trigger, "Problem is at")
 		for i := range ss.hashes {
