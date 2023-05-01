@@ -29,15 +29,15 @@ import (
 )
 
 var (
-	hashLimit       int    = 30 // Maximum length of a hash string
-	test_command    string = "./gshs_test.bash"
-	initialSuffix   string = ""           // The initial hash suffix assumed to cause failure.
-	logPrefix       string = "GSHS_LAST_" // Prefix on PASS/FAIL log files.
-	verbose         bool   = false
-	swapPassAndFail bool   = false
-	old             bool   = false
-	timeout         int    = 900 // Timeout in seconds to apply to command; failure if hit
-	multiple        int    = 1   // Search for this many failures.
+	hashLimit     int    = 30 // Maximum length of a hash string
+	test_command  string = "./gshs_test.bash"
+	initialSuffix string = ""           // The initial hash suffix assumed to cause failure.
+	logPrefix     string = "GSHS_LAST_" // Prefix on PASS/FAIL log files.
+	verbose       bool   = false
+	timeout       int    = 900 // Timeout in seconds to apply to command; failure if hit
+	multiple      int    = 1   // Search for this many failures.
+	seed          int64  = time.Now().UnixNano()
+	batchExclude  bool   = false
 
 	// Name of the environment variable that contains the hash suffix to be matched against function name hashes.
 	hash_ev_name = "gossahash"
@@ -106,9 +106,9 @@ type searchState struct {
 	lastTrigger string
 }
 
-const GCDprefix = "GOCOMPILEDEBUG="
+var initialEnvEnvPrefix = "GOCOMPILEDEBUG="
 
-var envEnvPrefix = GCDprefix
+var envEnvPrefix = initialEnvEnvPrefix
 
 // hashPrefix is a string that precedes the hashcodes, for signalling
 // different sorts of hashing (e.g., full path name vs basename)
@@ -154,24 +154,25 @@ func (ss *searchState) tryCmd(suffix string) (output []byte, err error) {
 		extraEnv = append(extraEnv, ev)
 	}
 
-	if old {
-		ev := fmt.Sprintf("%s=%s", hash_ev_name, suffix)
-		extraEnv = append(extraEnv, ev)
-
-		for i := 0; i < len(ss.hashes); i++ {
-			ev = fmt.Sprintf("%s%d=%s", hash_ev_name, i, ss.hashes[i])
-			extraEnv = append(extraEnv, ev)
-		}
-	} else {
-		extraEnv = append(extraEnv, ss.newStyleEnvString(true))
-	}
+	extraEnv = append(extraEnv, ss.newStyleEnvString(true))
 
 	extraEnv = append(extraEnv, commandLineEnv...)
 
 	cmd.Env = append(cmd.Env, extraEnv...)
 
 	if verbose || true {
-		fmt.Fprintf(os.Stdout, "Trying %s args=%s, env=%s\n", test_command, args, extraEnv)
+		line := ""
+		for _, e := range extraEnv {
+			line += e
+			line += " "
+		}
+		line += test_command
+		for _, a := range args {
+			line += " "
+			line += a
+		}
+
+		fmt.Fprintf(os.Stdout, "Trying: %s\n", line)
 	} else {
 		if len(extraEnv) == 0 {
 			fmt.Fprintf(os.Stdout, "Trying %s\n", suffix)
@@ -286,14 +287,9 @@ func (ss *searchState) trySuffix(suffix string) (int, []byte) {
 
 	// (error == nil) means success
 	prefix := ""
-	if swapPassAndFail {
-		prefix = "NOT-"
-	}
-	if (error == nil) == swapPassAndFail {
-		why := "success treated as failure"
-		if error != nil {
-			why = error.Error()
-		}
+
+	if error != nil {
+		why := error.Error()
 		// we like errors.
 		fmt.Fprintf(os.Stdout, "%s %sfailed (%d distinct triggers): %s\n", test_command, prefix, count, why)
 		lfn := fmt.Sprintf("%s%sFAIL.%d.log", logPrefix, prefix, ss.next_singleton_hash_index)
@@ -316,33 +312,25 @@ func (ss *searchState) trySuffix(suffix string) (int, []byte) {
 }
 
 func main() {
-	hash_option_info := hash_ev_name + "/(if -O)" + strings.ToUpper(hash_ev_name)
-	hash_option_name := ""
 	fma := false
-	flag.IntVar(&timeout, "t", timeout, "timeout in seconds for running test script, 0=run till done. Negative timeout means timing out is a pass, not a failure")
 
-	// flag.Var(&args, "c", "executable file to run.\n"+
-	// 	"\tMay be repeated to supply leading args to command.\n\t") // default on next line
-
-	flag.StringVar(&hash_option_name, "e", hash_option_info, "name/prefix of environment variable communicating hash suffix")
-
-	flag.BoolVar(&swapPassAndFail, "X", swapPassAndFail, "swap pass and fail for test script (default false)")
-	flag.BoolVar(&verbose, "v", verbose, "also print output of test script (default false)")
-	flag.BoolVar(&old, "O", old, "use old environment variable protocol")
-
-	flag.IntVar(&hashLimit, "n", hashLimit, "maximum hash suffix length to try before giving up")
-
-	flag.StringVar(&logPrefix, "l", logPrefix, "prefix of log file names ending ...{PASS,FAIL}.log")
-
-	flag.StringVar(&initialSuffix, "P", initialSuffix, "root of hash suffix to begin searching at (default empty)")
+	flag.BoolVar(&batchExclude, "BX", batchExclude, "for repeated multi-point failure search, exclude all points on failure location")
+	flag.StringVar(&initialEnvEnvPrefix, "E", initialEnvEnvPrefix, "prefix string for environment-encoded variables, e.g., GOCOMPILEDEBUG= or GODEBUG=")
+	flag.BoolVar(&fail, "F", fail, "act as a test program.  Generates multiple multipoint failures.")
 	flag.StringVar(&hashPrefix, "H", hashPrefix, "string prepended to all hash encodings, for special hash interpretation/debugging")
+	flag.StringVar(&initialSuffix, "P", initialSuffix, "root of hash suffix to begin searching at (default empty), it should fail for this suffix")
 
-	flag.BoolVar(&function_selection_use_stdout, "s", function_selection_use_stdout, "use stdout for 'triggered' communication (obsolete, now default)")
-	flag.BoolVar(&function_selection_use_file, "f", function_selection_use_file, "use file for 'triggered' communication (sets GSHS_LOGFILE)")
+	flag.StringVar(&hash_ev_name, "e", hash_ev_name, "name/prefix of variable communicating hash suffix")
+	flag.BoolVar(&function_selection_use_file, "f", function_selection_use_file, "if set, use a file instead of standard out for hash trigger information")
+	flag.BoolVar(&fma, "fma", fma, "search for fused-multiply-add floating point rounding problems (for arm64, ppc64, s390x)")
+	flag.IntVar(&multiple, "n", multiple, "stop after finding this many failures (0 for don't stop)")
+	flag.IntVar(&timeout, "t", timeout, "timeout in seconds for running test script, 0=run till done. Negative timeout means timing out is a pass, not a failure")
+	flag.BoolVar(&verbose, "v", verbose, "also print output of test script (default false)")
 
-	flag.BoolVar(&fail, "F", fail, "act as a test program")
-	flag.BoolVar(&fma, "fma", fma, "search for fma problems")
-	flag.IntVar(&multiple, "M", multiple, "stop after finding this many failures (0 for don't stop)")
+	// flag.StringVar(&logPrefix, "l", logPrefix, "prefix of log file names ending ...{PASS,FAIL}.log")
+
+	// flag.BoolVar(&function_selection_use_stdout, "s", function_selection_use_stdout, "use stdout for 'triggered' communication (obsolete, now default)")
+	// flag.BoolVar(&function_selection_use_file, "f", function_selection_use_file, "use file for 'triggered' communication (sets GSHS_LOGFILE)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
@@ -378,44 +366,10 @@ that are debugged using GSHS_LOGFILE should open it in append
 mode, not truncate, since they may have been preceded by some
 other phase of the build or test.
 
-Swapping pass and fail can be used to selectively disable the
-minimum number of optimizations to allow the code to run.
-
 The %s command can be run as its own test with the -F flag, as in
 (prints about 100 long lines, and demonstrates multi-point failure detection):
 
   %s %s -F 
-
-This Go code can be used to trigger the tested behavior:
-
-func doit(name string) bool {
-    if os.Getenv("GOSSAHASH") == "" {
-        return true  // Default behavior is yes.
-    }
-    // Check hash of name against a partial input hash.  We use this feature 
-    // to do a binary search to find a function that is incorrectly compiled.
-    hstr := ""
-    for _, b := range sha1.Sum([]byte(name)) {
-        hstr += fmt.Sprintf("%%08b", b)
-    }
-    if strings.HasSuffix(hstr, os.Getenv("GOSSAHASH")) {
-        fmt.Printf("GOSSAHASH triggered %%s\n", name)
-        return true
-    }
-    // Iteratively try additional hashes to allow tests for multi-point failure.
-    for i := 0; true; i++ {
-        ev := fmt.Sprintf("GOSSAHASH%%d", i)
-        evv := os.Getenv(ev)
-        if evv == "" {
-            break
-        }
-        if strings.HasSuffix(hstr, evv) {
-            fmt.Printf("%%s triggered %%s\n", ev, name)
-            return true
-        }
-    }
-    return false
-}
 `,
 			os.Args[0], hash_ev_name, os.Args[0], os.Args[0], os.Args[0])
 	}
@@ -426,25 +380,11 @@ func doit(name string) bool {
 	// to search for multiple failures; perhaps one is
 	// substantially easier to debug in isolation.
 	// TODO print this and also take it as a parameter; use it for the logfile name.
-	seed := time.Now().UnixNano()
 	rand.Seed(seed)
 
-	if hash_option_name == hash_option_info {
-		if old {
-			if fma {
-				fmt.Fprintf(os.Stderr, "-fma and -O are incompatible (-fma changes the environment variable)\n")
-				os.Exit(1)
-			}
-			hash_ev_name = strings.ToUpper(hash_ev_name)
-		} else if fma {
-			hash_ev_name = "fmahash"
-		}
-	} else {
-		if fma {
-			fmt.Fprintf(os.Stderr, "-fma and -e are incompatible (-fma changes the environment variable)\n")
-			os.Exit(1)
-		}
-		hash_ev_name = hash_option_name
+	if fma && hash_ev_name != "fma" {
+		fmt.Fprintf(os.Stderr, "-fma and -e are incompatible (-fma changes the environment variable)\n")
+		os.Exit(1)
 	}
 
 	var ok error
@@ -465,6 +405,7 @@ func doit(name string) bool {
 		return
 	}
 
+	// For the Go compiler, splice in existing values of GOCOMPILEDEBUG
 	GCD := os.Getenv("GOCOMPILEDEBUG")
 	if GCD != "" {
 		envEnvPrefix = envEnvPrefix + GCD + ","
@@ -473,17 +414,18 @@ func doit(name string) bool {
 	restArgs := flag.Args()
 	var firstNotEnv int
 	var arg string
+	// pre-scan arguments for environment variable settings.
 	for firstNotEnv, arg = range restArgs {
 		if !strings.Contains(arg, "=") {
 			break
 		}
-		if !old && strings.HasPrefix(arg, GCDprefix) {
-			if len(arg) == len(GCDprefix) {
+		if strings.HasPrefix(arg, initialEnvEnvPrefix) {
+			if len(arg) == len(initialEnvEnvPrefix) {
 				// if they did this, effect is to override the one in the environment,
 				// so reset anything inherited from there.
-				envEnvPrefix = GCDprefix
+				envEnvPrefix = initialEnvEnvPrefix
 			} else {
-				envEnvPrefix = envEnvPrefix + arg[len(GCDprefix):] + ","
+				envEnvPrefix = envEnvPrefix + arg[len(initialEnvEnvPrefix):] + ","
 			}
 		} else {
 			commandLineEnv = append(commandLineEnv, arg)
@@ -514,6 +456,9 @@ func doit(name string) bool {
 				break
 			}
 			excludes = append(excludes, ss.suffix)
+			if batchExclude {
+				excludes = append(excludes, ss.hashes...)
+			}
 			ss = &searchState{}
 			result, _ := ss.trySuffix(initialSuffix)
 			if result == PASSED || result == PASSED0 {
@@ -530,16 +475,17 @@ func doit(name string) bool {
 	}
 }
 
-func (ss *searchState) finish() {
-	printCL := func() {
-		for _, e := range commandLineEnv {
-			fmt.Printf(" %s", e)
-		}
-		fmt.Printf(" %s", test_command)
-		for _, e := range args {
-			fmt.Printf(" %s", e)
-		}
+func printCL() {
+	for _, e := range commandLineEnv {
+		fmt.Printf(" %s", e)
 	}
+	fmt.Printf(" %s", test_command)
+	for _, e := range args {
+		fmt.Printf(" %s", e)
+	}
+}
+
+func (ss *searchState) finish() {
 	printGSF := func() {
 		if ss.lastTrigger != "" && !strings.HasPrefix(ss.lastTrigger, "POS=") {
 			ci := strings.Index(ss.lastTrigger, ":")
@@ -571,11 +517,7 @@ func (ss *searchState) finish() {
 	if len(ss.hashes) == 0 {
 		fmt.Printf("FINISHED, suggest this command line for debugging:\n")
 		printGSF()
-		if old {
-			fmt.Printf("%s=%s", hash_ev_name, string(ss.suffix))
-		} else {
-			fmt.Printf("%s", ss.newStyleEnvString(false))
-		}
+		fmt.Printf("%s", ss.newStyleEnvString(false))
 		printCL()
 		fmt.Println()
 		printPOS(ss.lastTrigger, "Problem is at")
@@ -636,15 +578,7 @@ func (ss *searchState) finish() {
 		fmt.Printf("FINISHED, after filtering, suggest this command line for debugging:\n")
 
 		printGSF()
-		if old {
-			fmt.Printf("%s=%s", hash_ev_name, ss.suffix)
-
-			for i, h := range ss.hashes {
-				fmt.Printf(" %s%d=%s", hash_ev_name, i, h)
-			}
-		} else {
-			fmt.Printf("%s", ss.newStyleEnvString(false))
-		}
+		fmt.Printf("%s", ss.newStyleEnvString(false))
 		printCL()
 		fmt.Println()
 

@@ -370,16 +370,13 @@ func newDoit(name string, param int) bool {
 	return hd.DebugHashMatchParam(name, uint64(param))
 }
 
-// test fails when "doit" is true for exactly 7 3-letter names.
+// test fails when "doit" is true for 4 or more 3-letter names.
 // this simulates multiple triggers required for failure.
 func test() {
-	if old {
-		doit = oldDoit
-	} else {
-		gcd := os.Getenv("GOCOMPILEDEBUG")
-		li := strings.LastIndex(gcd, "=")
-		hd = NewHashDebug(hash_ev_name, gcd[li+1:])
-	}
+
+	gcd := os.Getenv("GOCOMPILEDEBUG")
+	li := strings.LastIndex(gcd, "=")
+	hd = NewHashDebug(hash_ev_name, gcd[li+1:])
 	rand.Seed(time.Now().UnixNano())
 	threeletters := 0
 	for i, w := range names {
@@ -389,15 +386,8 @@ func test() {
 	}
 	time.Sleep(50 * time.Millisecond)
 
-	if swapPassAndFail {
-		if threeletters != 7 {
-			fmt.Println("FAIL!")
-			os.Exit(1)
-		}
-	} else {
-		if threeletters == 7 {
-			fmt.Println("FAIL!")
-			os.Exit(1)
-		}
+	if threeletters >= 4 {
+		fmt.Println("FAIL!")
+		os.Exit(1)
 	}
 }
