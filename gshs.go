@@ -40,7 +40,8 @@ var (
 	batchExclude  bool   = false
 
 	// Name of the environment variable that contains the hash suffix to be matched against function name hashes.
-	hash_ev_name = "gossahash"
+	hash_ev_string = "gossahash"
+	hash_ev_name   = "needs to be set"
 	// Expect to see this in the output when a value for gossahash triggers SSA-compilation of a function.
 	function_selection_string     string
 	function_selection_logfile    string
@@ -119,7 +120,7 @@ var hashPrefix = ""
 var sep = "/"
 
 func (ss *searchState) newStyleEnvString(withExcludes bool) string {
-	ev := fmt.Sprintf("%s%s=%s", envEnvPrefix, hash_ev_name, hashPrefix)
+	ev := fmt.Sprintf("%s%s=%s", envEnvPrefix, hash_ev_string, hashPrefix)
 	if withExcludes {
 		for _, x := range excludes {
 			ev += "-" + x + sep
@@ -322,7 +323,7 @@ func main() {
 	flag.StringVar(&hashPrefix, "H", hashPrefix, "string prepended to all hash encodings, for special hash interpretation/debugging")
 	flag.StringVar(&initialSuffix, "P", initialSuffix, "root of hash suffix to begin searching at (default empty), it should fail for this suffix")
 
-	flag.StringVar(&hash_ev_name, "e", hash_ev_name, "name/prefix of variable communicating hash suffix")
+	flag.StringVar(&hash_ev_string, "e", hash_ev_string, "name/prefix of variable communicating hash suffix")
 	flag.BoolVar(&function_selection_use_file, "f", function_selection_use_file, "if set, use a file instead of standard out for hash trigger information")
 	flag.BoolVar(&fma, "fma", fma, "search for fused-multiply-add floating point rounding problems (for arm64, ppc64, s390x)")
 	flag.IntVar(&multiple, "n", multiple, "stop after finding this many failures (0 for don't stop)")
@@ -384,6 +385,11 @@ The %s command can be run as its own test with the -F flag, as in
 	// TODO print this and also take it as a parameter; use it for the logfile name.
 	rand.Seed(seed)
 
+	hash_ev_name = hash_ev_string
+	if i := strings.Index(hash_ev_name, "="); i != -1 {
+		hash_ev_name = hash_ev_name[:i]
+	}
+
 	if fma && hash_ev_name != "fma" {
 		fmt.Fprintf(os.Stderr, "-fma and -e are incompatible (-fma changes the environment variable)\n")
 		os.Exit(1)
@@ -407,10 +413,14 @@ The %s command can be run as its own test with the -F flag, as in
 		return
 	}
 
+	envEnvPrefix = initialEnvEnvPrefix
+
 	// For the Go compiler, splice in existing values of GOCOMPILEDEBUG
-	GCD := os.Getenv("GOCOMPILEDEBUG")
-	if GCD != "" {
-		envEnvPrefix = envEnvPrefix + GCD + ","
+	if envEnvPrefix == "GOCOMPILEDEBUG=" {
+		GCD := os.Getenv("GOCOMPILEDEBUG")
+		if GCD != "" {
+			envEnvPrefix = envEnvPrefix + GCD + ","
+		}
 	}
 
 	restArgs := flag.Args()
