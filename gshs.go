@@ -29,15 +29,17 @@ import (
 )
 
 var (
-	hashLimit     int    = 30 // Maximum length of a hash string
-	test_command  string = "./gshs_test.bash"
-	initialSuffix string = ""           // The initial hash suffix assumed to cause failure.
-	logPrefix     string = "GSHS_LAST_" // Prefix on PASS/FAIL log files.
-	verbose       bool   = false
-	timeout       int    = 900 // Timeout in seconds to apply to command; failure if hit
-	multiple      int    = 1   // Search for this many failures.
-	seed          int64  = time.Now().UnixNano()
-	batchExclude  bool   = false
+	hashLimit      int    = 30 // Maximum length of a hash string
+	test_command   string = "./gshs_test.bash"
+	initialSuffix  string = ""           // The initial hash suffix assumed to cause failure.
+	restartSuffix  string = ""           // Restart a search here.
+	restartExclude string = ""           // Exclude these suffixes from search (comma or minus separated).
+	logPrefix      string = "GSHS_LAST_" // Prefix on PASS/FAIL log files.
+	verbose        bool   = false
+	timeout        int    = 900 // Timeout in seconds to apply to command; failure if hit
+	multiple       int    = 1   // Search for this many failures.
+	seed           int64  = time.Now().UnixNano()
+	batchExclude   bool   = false
 
 	// Name of the environment variable that contains the hash suffix to be matched against function name hashes.
 	hash_ev_string = "gossahash"
@@ -263,6 +265,29 @@ func matchTrigger(output []byte, hash_ev_name string) (map[string]int, string) {
 	return m, lastTrigger
 }
 
+func parseExcludes(x string) []string {
+	if x == "" {
+		return nil
+	}
+	var xs []string
+	var a string
+	for _, c := range x {
+		switch c {
+		case '0', '1':
+			a = a + string(c)
+		case ' ', ',', '-', '+':
+			if len(a) > 0 {
+				xs = append(xs, a)
+				a = ""
+			}
+		}
+	}
+	if len(a) > 0 {
+		xs = append(xs, a)
+	}
+	return xs
+}
+
 // trySuffix runs the test command passing it suffix as an argument,
 // and returns PASSED/FAILED/DONE/DONE0 based on return code and occurrences
 // of the function_selection_string within the output; if there is only
@@ -321,7 +346,8 @@ func main() {
 	flag.StringVar(&initialEnvEnvPrefix, "E", initialEnvEnvPrefix, "prefix string for environment-encoded variables, e.g., GOCOMPILEDEBUG= or GODEBUG=")
 	flag.BoolVar(&fail, "F", fail, "act as a test program.  Generates multiple multipoint failures.")
 	flag.StringVar(&hashPrefix, "H", hashPrefix, "string prepended to all hash encodings, for special hash interpretation/debugging")
-	flag.StringVar(&initialSuffix, "P", initialSuffix, "root of hash suffix to begin searching at (default empty), it should fail for this suffix")
+	flag.StringVar(&restartSuffix, "R", restartSuffix, "begin searching at this suffix, it should known-fail for this suffix[1:]")
+	flag.StringVar(&restartExclude, "X", restartExclude, "exclude these suffixes from matching")
 
 	flag.StringVar(&hash_ev_string, "e", hash_ev_string, "name/prefix of variable communicating hash suffix")
 	flag.BoolVar(&function_selection_use_file, "f", function_selection_use_file, "if set, use a file instead of standard out for hash trigger information")
@@ -354,8 +380,7 @@ name or their combination. Each run of the executable is expected to
 print '<evname> triggered' (for example, '%s triggered') and the hash
 suffix(es) are chosen to search for the one(s) that result in a single
 trigger line occurring.  Multiple occurrences of exactly the same
-trigger line are counted once.  When fewer than 4 lines trigger, the
-matching trigger lines are included in the output.
+trigger line are counted once.
 
 By default the trigger lines are expected to be written to standard
 output, but -f flag sets the environment variable GSHS_LOGFILE to
@@ -368,6 +393,12 @@ else they may overwrite the logfile.  Similarly, the programs
 that are debugged using GSHS_LOGFILE should open it in append
 mode, not truncate, since they may have been preceded by some
 other phase of the build or test.
+
+Searches can be restarted or parallel searches can be managed
+using the -R and -X flags.  -R 1yz assumes that yz is known to
+fail, will start at 1yz, and if that does not fail, will try
+0yz.  -X takes a list (space, comma, +, or - separated) of binary
+suffixes to exclude from the restarted search.
 
 The %s command can be run as its own test with the -F flag, as in
 (prints about 100 long lines, and demonstrates multi-point failure detection):
@@ -423,6 +454,8 @@ The %s command can be run as its own test with the -F flag, as in
 		}
 	}
 
+	excludes = parseExcludes(restartExclude)
+
 	restArgs := flag.Args()
 	var firstNotEnv int
 	var arg string
@@ -457,8 +490,12 @@ The %s command can be run as its own test with the -F flag, as in
 
 	sss := []*searchState{}
 	ss := &searchState{}
+	if restartSuffix != "" {
+		initialSuffix = restartSuffix[1:]
+		restartSuffix = restartSuffix[:1]
+	}
 	for {
-		if !ss.search(initialSuffix) {
+		if !ss.search(initialSuffix, restartSuffix) {
 			fmt.Printf("FLAKY TEST OR BAD SEARCH\n")
 			break
 		} else {
@@ -614,7 +651,7 @@ func (ss *searchState) finish() {
 	}
 }
 
-func (ss *searchState) search(confirmed_suffix string) bool {
+func (ss *searchState) search(confirmed_suffix, restart_suffix string) bool {
 	// confirmed_suffix is a suffix that is confirmed
 	// to contain a failure.  The first confirmation is
 	// assumed to have occurred externally before this
@@ -622,8 +659,10 @@ func (ss *searchState) search(confirmed_suffix string) bool {
 	for len(confirmed_suffix) < hashLimit {
 		a := "0"
 		b := "1"
-		if 0 == 8192&rand.Int() {
+
+		if restart_suffix == "" && 0 == 8192&rand.Int() || restart_suffix == "1" {
 			a, b = b, a
+			restart_suffix = ""
 		}
 		first_result, _ := ss.trySuffix(a + confirmed_suffix)
 		switch first_result {
