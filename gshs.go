@@ -341,6 +341,7 @@ func (ss *searchState) trySuffix(suffix string) (int, []byte) {
 
 func main() {
 	fma := false
+	loopvar := false
 
 	flag.BoolVar(&batchExclude, "BX", batchExclude, "for repeated multi-point failure search, exclude all points on failure location")
 	flag.StringVar(&initialEnvEnvPrefix, "E", initialEnvEnvPrefix, "prefix string for environment-encoded variables, e.g., GOCOMPILEDEBUG= or GODEBUG=")
@@ -352,6 +353,7 @@ func main() {
 	flag.StringVar(&hash_ev_string, "e", hash_ev_string, "name/prefix of variable communicating hash suffix")
 	flag.BoolVar(&function_selection_use_file, "f", function_selection_use_file, "if set, use a file instead of standard out for hash trigger information")
 	flag.BoolVar(&fma, "fma", fma, "search for fused-multiply-add floating point rounding problems (for arm64, ppc64, s390x)")
+	flag.BoolVar(&loopvar, "loopvar", loopvar, "search for loopvar-dependent failures")
 	flag.IntVar(&multiple, "n", multiple, "stop after finding this many failures (0 for don't stop)")
 	flag.IntVar(&timeout, "t", timeout, "timeout in seconds for running test script, 0=run till done. Negative timeout means timing out is a pass, not a failure")
 	flag.BoolVar(&verbose, "v", verbose, "also print output of test script (default false)")
@@ -416,14 +418,22 @@ The %s command can be run as its own test with the -F flag, as in
 	// TODO print this and also take it as a parameter; use it for the logfile name.
 	rand.Seed(seed)
 
+	if fma && loopvar {
+		fmt.Printf("Cannot set both -fma and -loopvar")
+		os.Exit(1)
+	}
+
+	if fma {
+		hash_ev_string = "fmahash"
+	}
+
+	if loopvar {
+		hash_ev_string = "loopvarhash"
+	}
+
 	hash_ev_name = hash_ev_string
 	if i := strings.Index(hash_ev_name, "="); i != -1 {
 		hash_ev_name = hash_ev_name[:i]
-	}
-
-	if fma && hash_ev_name != "fma" {
-		fmt.Fprintf(os.Stderr, "-fma and -e are incompatible (-fma changes the environment variable)\n")
-		os.Exit(1)
 	}
 
 	var ok error

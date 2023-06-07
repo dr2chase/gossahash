@@ -3,21 +3,27 @@ Searches for the function that the SSA phase of the Go compiler is doing wrong.
 
 ```
 Usage of ./gossahash:
-  -F	act as a test program
-  -P string
-    	root of hash suffix to begin searching at (default empty)
-  -X	swap pass and fail for test script (default false)
+  -BX
+        for repeated multi-point failure search, exclude all points on failure location
+  -E string
+        prefix string for environment-encoded variables, e.g., GOCOMPILEDEBUG= or GODEBUG= (default "GOCOMPILEDEBUG=")
+  -F    act as a test program.  Generates multiple multipoint failures.
+  -H string
+        string prepended to all hash encodings, for special hash interpretation/debugging
+  -R string
+        begin searching at this suffix, it should known-fail for this suffix[1:]
+  -X string
+        exclude these suffixes from matching
   -e string
-    	name/prefix of environment variable communicating hash suffix (default "GOSSAHASH")
-  -f	use file for 'triggered' communication (sets GSHS_LOGFILE)
-  -l string
-    	prefix of log file names ending ...{PASS,FAIL}.log (default "GSHS_LAST_")
+        name/prefix of variable communicating hash suffix (default "gossahash")
+  -f    if set, use a file instead of standard out for hash trigger information
+  -fma
+        search for fused-multiply-add floating point rounding problems (for arm64, ppc64, s390x)
   -n int
-    	maximum hash suffix length to try before giving up (default 30)
-  -s	use stdout for 'triggered' communication (obsolete, now default) (default true)
+        stop after finding this many failures (0 for don't stop) (default 1)
   -t int
-    	timeout in seconds for running test script, 0=run till done. Negative timeout means timing out is a pass, not a failure (default 900)
-  -v	also print output of test script (default false)
+        timeout in seconds for running test script, 0=run till done. Negative timeout means timing out is a pass, not a failure (default 900)
+  -v    also print output of test script (default false)
 ```
 
 ./gossahash runs the test executable (default ./gshs_test.bash) repeatedly
@@ -33,11 +39,10 @@ will search for a function whose miscompilation causes the problem.
 The hash suffix is made of 1 and 0 characters, expected to match the
 suffix of a hash of something interesting, like a function or variable
 name or their combination. Each run of the executable is expected to
-print '\<evname\> triggered' (for example, 'GOSSAHASH triggered') and the hash
+print '\<evname\> triggered' (for example, 'gossahash triggered') and the hash
 suffix(es) are chosen to search for the one(s) that result in a single
 trigger line occurring.  Multiple occurrences of exactly the same
-trigger line are counted once.  When fewer than 4 lines trigger, the
-matching trigger lines are included in the output.
+trigger line are counted once.
 
 By default the trigger lines are expected to be written to standard
 output, but -f flag sets the environment variable GSHS_LOGFILE to
@@ -51,43 +56,12 @@ that are debugged using GSHS_LOGFILE should open it in append
 mode, not truncate, since they may have been preceded by some
 other phase of the build or test.
 
-Swapping pass and fail can be used to selectively disable the
-minimum number of optimizations to allow the code to run.
-
 The ./gossahash command can be run as its own test with the -F flag, as in
 (prints about 100 long lines, and demonstrates multi-point failure detection):
 ```
   ./gossahash ./gossahash -F
 ```
-This Go code can be used to trigger the tested behavior:
 
-```
-func doit(name string) bool {
-    if os.Getenv("GOSSAHASH") == "" {
-        return true  // Default behavior is yes.
-    }
-    // Check hash of name against a partial input hash.  We use this feature
-    // to do a binary search to find a function that is incorrectly compiled.
-    hstr := ""
-    for _, b := range sha1.Sum([]byte(name)) {
-        hstr += fmt.Sprintf("%08b", b)
-    }
-    if strings.HasSuffix(hstr, os.Getenv("GOSSAHASH")) {
-        fmt.Printf("GOSSAHASH triggered %s\n", name)
-        return true
-    }
-    // Iteratively try additional hashes to allow tests for multi-point failure.
-    for i := 0; true; i++ {
-        ev := fmt.Sprintf("GOSSAHASH%d", i)
-        evv := os.Getenv(ev)
-        if evv == "" {
-            break
-        }
-        if strings.HasSuffix(hstr, evv) {
-            fmt.Printf("%s triggered %s\n", ev, name)
-            return true
-        }
-    }
-    return false
-}
-```
+The compiler-side version of this protocol has become more complicated
+over time to provide support for "multiple-point" failure and detection
+of multiple failures.  The code in `fail.go` can be used for this purpose.
