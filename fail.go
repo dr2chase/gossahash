@@ -145,14 +145,16 @@ func oldDoit(name string, param int) bool {
 	// We use this feature to do a binary search within a
 	// package to find a function that is incorrectly compiled.
 	hstr := ""
+	xstr := ""
 	hash := sha1.Sum([]byte(name))
 	for _, b := range hash[len(hash)-4:] {
 		hstr += fmt.Sprintf("%08b", b)
+		xstr += fmt.Sprintf("%02x", b)
 	}
 
 	if strings.HasSuffix(hstr, os.Getenv(hash_ev_name)) {
 		for i := 7 & rand.Int(); i >= 0; i-- {
-			fmt.Printf("%s triggered %s %s\n", hash_ev_name, name, hstr)
+			fmt.Printf("%s triggered %s 0x%s\n", hash_ev_name, name, xstr)
 		}
 		return true
 	}
@@ -166,7 +168,7 @@ func oldDoit(name string, param int) bool {
 		}
 		if strings.HasSuffix(hstr, evv) {
 			for i := 7 & rand.Int(); i >= 0; i-- {
-				fmt.Printf("%s triggered %s %s\n", ev, name, hstr)
+				fmt.Printf("%s triggered %s 0x%s\n", ev, name, xstr)
 			}
 			return true
 		}
@@ -322,15 +324,8 @@ func (d *HashDebug) DebugHashMatchParam(pkgAndName string, param uint64) bool {
 
 	for _, m := range d.matches {
 		if (m.hash^hash)&m.mask == 0 {
-			hstr := ""
-			if hash == 0 {
-				hstr = "0"
-			} else {
-				for ; hash != 0; hash = hash >> 1 {
-					hstr = string('0'+byte(hash&1)) + hstr
-				}
-			}
-			d.logDebugHashMatch(m.name, pkgAndName, hstr, param)
+			xstr := fmt.Sprintf("0x%x", hash)
+			d.logDebugHashMatch(m.name, pkgAndName, xstr, param)
 			return true
 		}
 	}
