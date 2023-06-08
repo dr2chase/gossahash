@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -243,6 +244,8 @@ func (ss *searchState) tryCmd(suffix string) (output []byte, err error) {
 	return
 }
 
+var hashmatch = regexp.MustCompilePOSIX("[01]+|0x[0-9a-f]+")
+
 // matchTrigger extracts hash trigger reports from the output.
 // repeats are collapsed, but counted in the returned map.  The
 // last match is also returned.
@@ -254,10 +257,17 @@ func matchTrigger(output []byte, hash_ev_name string) (map[string]int, string) {
 	for scanner.Scan() {
 		s := scanner.Text()
 		if strings.Contains(s, triggerPrefix) {
-			m[s] = m[s] + 1
 			space := strings.LastIndex(s, " ")
 			if space == -1 {
 				space = len(s)
+				m[s] = m[s] + 1
+			} else {
+				h := strings.TrimSpace(s[space:])
+				if ss := hashmatch.FindStringSubmatch(h); len(ss) == 1 && ss[0] == h {
+					m[h] = m[h] + 1
+				} else {
+					m[s] = m[s] + 1
+				}
 			}
 			lastTrigger = strings.TrimSpace(s[len(triggerPrefix):space])
 		}
