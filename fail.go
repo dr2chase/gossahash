@@ -136,46 +136,6 @@ var names []string = []string{
 	"hen",
 }
 
-func oldDoit(name string, param int) bool {
-	if os.Getenv(hash_ev_name) == "" {
-		// Default behavior is yes.
-		return true
-	}
-	// Check the hash of the name against a partial input hash.
-	// We use this feature to do a binary search within a
-	// package to find a function that is incorrectly compiled.
-	hstr := ""
-	xstr := ""
-	hash := sha1.Sum([]byte(name))
-	for _, b := range hash[len(hash)-4:] {
-		hstr += fmt.Sprintf("%08b", b)
-		xstr += fmt.Sprintf("%02x", b)
-	}
-
-	if strings.HasSuffix(hstr, os.Getenv(hash_ev_name)) {
-		for i := 7 & rand.Int(); i >= 0; i-- {
-			fmt.Printf("%s triggered %s 0x%s\n", hash_ev_name, name, xstr)
-		}
-		return true
-	}
-	// Iteratively try additional hashes to allow tests for
-	// multi-point failure.
-	for i := 0; true; i++ {
-		ev := fmt.Sprintf("%s%d", hash_ev_name, i)
-		evv := os.Getenv(ev)
-		if evv == "" {
-			break
-		}
-		if strings.HasSuffix(hstr, evv) {
-			for i := 7 & rand.Int(); i >= 0; i-- {
-				fmt.Printf("%s triggered %s 0x%s\n", ev, name, xstr)
-			}
-			return true
-		}
-	}
-	return false
-}
-
 type hashAndMask struct {
 	// a hash h matches if (h^hash)&mask == 0
 	hash uint64
@@ -229,21 +189,31 @@ func NewHashDebug(ev, s string) *HashDebug {
 		hd.no = true
 		return hd
 	}
-
-	ss := strings.Split(s, "/")
-	// first remove any leading exclusions; these are preceded with "-"
-	i := 0
-	for len(ss) > 0 {
-		s := ss[0]
-		if len(s) == 0 || len(s) > 0 && s[0] != '-' {
-			break
+	var ss []string
+	var sc string // current
+	for _, c := range s {
+		switch c {
+		// Ignore leading 'v' from bisect also.
+		case '/', '+', ',', ' ', '\t', '-', 'v':
+			if len(sc) > 0 {
+				ss = append(ss, sc)
+				sc = ""
+			}
+		default:
+			sc += string(c)
+			continue
 		}
-		ss = ss[1:]
-		hd.excludes = append(hd.excludes, toHashAndMask(s[1:], fmt.Sprintf("%s%d", "HASH_EXCLUDE", i)))
-		i++
+		if c == '-' {
+			sc = "-"
+		}
 	}
+	if len(sc) > 0 {
+		ss = append(ss, sc)
+		sc = ""
+	}
+
 	// hash searches may use additional EVs with 0, 1, 2, ... suffixes.
-	i = 0
+	i := 0
 	for _, s := range ss {
 		if s == "" {
 			if i != 0 || len(ss) > 1 && ss[1] != "" || len(ss) > 2 {
@@ -254,12 +224,16 @@ func NewHashDebug(ev, s string) *HashDebug {
 			hd.matches = append(hd.matches, toHashAndMask("1", fmt.Sprintf("%s1", ev)))
 			break
 		}
-		if i == 0 {
-			hd.matches = append(hd.matches, toHashAndMask(s, fmt.Sprintf("%s", ev)))
+		if s[0] == '-' {
+			hd.excludes = append(hd.excludes, toHashAndMask(s[1:], fmt.Sprintf("%s%d", "HASH_EXCLUDE", i)))
 		} else {
-			hd.matches = append(hd.matches, toHashAndMask(s, fmt.Sprintf("%s%d", ev, i-1)))
+			if i == 0 {
+				hd.matches = append(hd.matches, toHashAndMask(s, fmt.Sprintf("%s", ev)))
+			} else {
+				hd.matches = append(hd.matches, toHashAndMask(s, fmt.Sprintf("%s%d", ev, i-1)))
+			}
+			i++
 		}
-		i++
 	}
 	return hd
 }
@@ -309,17 +283,18 @@ func (d *HashDebug) DebugHashMatchParam(pkgAndName string, param uint64) bool {
 	if d.no {
 		return false
 	}
-	if d.yes {
-		d.logDebugHashMatch(d.name, pkgAndName, "y", param)
-		return true
-	}
-
 	hash := hashOf(pkgAndName, param)
 
 	for _, m := range d.excludes {
 		if (m.hash^hash)&m.mask == 0 {
 			return false
 		}
+	}
+
+	if len(d.matches) == 0 || d.yes {
+		xstr := fmt.Sprintf("0x%x", hash)
+		d.logDebugHashMatch(d.name, pkgAndName, xstr, param)
+		return true
 	}
 
 	for _, m := range d.matches {
@@ -352,9 +327,13 @@ func (d *HashDebug) logDebugHashMatch(varname, name, hstr string, param uint64) 
 	}
 	// External tools depend on this string
 	if param == 0 {
+		// loopvarhash1 triggered ./a/a.go:11:6 001001011000010011100011
 		fmt.Fprintf(file, "%s triggered %s %s\n", varname, name, hstr)
+		// ./a/a.go:11:6 [bisect-match 0x800ddd09be2584e3]
+		fmt.Fprintf(file, "%s [bisect-match %s]\n", name, hstr)
 	} else {
 		fmt.Fprintf(file, "%s triggered %s:%d %s\n", varname, name, param, hstr)
+		fmt.Fprintf(file, "%s:%d [bisect-match %s]\n", name, param, hstr)
 	}
 }
 
