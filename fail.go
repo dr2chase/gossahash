@@ -328,11 +328,15 @@ func (d *HashDebug) logDebugHashMatch(varname, name, hstr string, param uint64) 
 	// External tools depend on this string
 	if param == 0 {
 		// loopvarhash1 triggered ./a/a.go:11:6 001001011000010011100011
-		fmt.Fprintf(file, "%s triggered %s %s\n", varname, name, hstr)
+		if !bisectSyntax {
+			fmt.Fprintf(file, "%s triggered %s %s\n", varname, name, hstr)
+		}
 		// ./a/a.go:11:6 [bisect-match 0x800ddd09be2584e3]
 		fmt.Fprintf(file, "%s [bisect-match %s]\n", name, hstr)
 	} else {
-		fmt.Fprintf(file, "%s triggered %s:%d %s\n", varname, name, param, hstr)
+		if !bisectSyntax {
+			fmt.Fprintf(file, "%s triggered %s:%d %s\n", varname, name, param, hstr)
+		}
 		fmt.Fprintf(file, "%s:%d [bisect-match %s]\n", name, param, hstr)
 	}
 }

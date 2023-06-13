@@ -25,6 +25,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -41,6 +42,7 @@ var (
 	multiple       int    = 1   // Search for this many failures.
 	seed           int64  = time.Now().UnixNano()
 	batchExclude   bool   = false
+	bisectSyntax   bool   = false
 
 	// Name of the environment variable that contains the hash suffix to be matched against function name hashes.
 	hash_ev_string = "gossahash"
@@ -249,27 +251,65 @@ var hashmatch = regexp.MustCompilePOSIX("[01]+|0x[0-9a-f]+")
 // matchTrigger extracts hash trigger reports from the output.
 // repeats are collapsed, but counted in the returned map.  The
 // last match is also returned.
-func matchTrigger(output []byte, hash_ev_name string) (map[string]int, string) {
+func matchTrigger(output []byte, hash_ev_name, suffix string) (map[string]int, string) {
+
+	mask := uint64(1)<<len(suffix) - 1
+	suffixVal, _ := strconv.ParseUint(suffix, 2, 64)
+	suffixVal &= mask
+
 	triggerPrefix := hash_ev_name + " triggered"
+	if bisectSyntax {
+		triggerPrefix = "[bisect-match "
+	}
+
 	m := make(map[string]int)
 	var lastTrigger string
 	scanner := bufio.NewScanner(bytes.NewBuffer(output))
 	for scanner.Scan() {
-		s := scanner.Text()
-		if strings.Contains(s, triggerPrefix) {
-			space := strings.LastIndex(s, " ")
+		s := strings.TrimSpace(scanner.Text())
+		if pi := strings.Index(s, triggerPrefix); pi != -1 {
+			var space int
+			end := -1
+			if bisectSyntax {
+				// [bisect-match 0xabcd]
+				space = strings.LastIndex(s, " ")
+				end = strings.LastIndex(s, "]")
+			}
+			if end == -1 {
+				space = strings.LastIndex(s, " ")
+				end = len(s)
+			}
+
 			if space == -1 {
 				space = len(s)
 				m[s] = m[s] + 1
 			} else {
-				h := strings.TrimSpace(s[space:])
+				h := strings.TrimSpace(s[space:end])
 				if ss := hashmatch.FindStringSubmatch(h); len(ss) == 1 && ss[0] == h {
-					m[h] = m[h] + 1
+					if bisectSyntax {
+						// Suffix must match
+						hv, err := strconv.ParseUint(h[2:], 16, 64)
+						if err == nil {
+							if hv&mask != suffixVal {
+								continue
+							}
+							m[h] = m[h] + 1
+						} else {
+							panic(fmt.Errorf("Failed to parse %s, error %v", h[2:], err))
+						}
+					} else {
+						m[h] = m[h] + 1
+					}
 				} else {
 					m[s] = m[s] + 1
 				}
 			}
-			lastTrigger = strings.TrimSpace(s[len(triggerPrefix):space])
+			if bisectSyntax {
+				lastTrigger = strings.TrimSpace(s[0:pi])
+			} else {
+				lastTrigger = strings.TrimSpace(s[len(triggerPrefix):space])
+			}
+
 		}
 	}
 	return m, lastTrigger
@@ -320,7 +360,7 @@ func (ss *searchState) trySuffix(suffix string) (int, []byte) {
 	// convergence on a single trigger line.
 
 	var m map[string]int
-	m, ss.lastTrigger = matchTrigger(output, hash_ev_name)
+	m, ss.lastTrigger = matchTrigger(output, hash_ev_name, suffix)
 	count := len(m)
 
 	// (error == nil) means success
@@ -359,6 +399,7 @@ func main() {
 	flag.StringVar(&hashPrefix, "H", hashPrefix, "string prepended to all hash encodings, for special hash interpretation/debugging")
 	flag.StringVar(&restartSuffix, "R", restartSuffix, "begin searching at this suffix, it should known-fail for this suffix[1:]")
 	flag.StringVar(&restartExclude, "X", restartExclude, "exclude these suffixes from matching")
+	flag.BoolVar(&bisectSyntax, "B", bisectSyntax, "use bisect syntax for matches")
 
 	flag.StringVar(&hash_ev_string, "e", hash_ev_string, "name/prefix of variable communicating hash suffix")
 	flag.BoolVar(&function_selection_use_file, "f", function_selection_use_file, "if set, use a file instead of standard out for hash trigger information")
@@ -662,10 +703,10 @@ func (ss *searchState) finish() {
 		fmt.Println()
 
 		output := ss.lastOutput
-		_, trigger := matchTrigger(output, hash_ev_name)
+		_, trigger := matchTrigger(output, hash_ev_name, ss.suffix)
 		printPOS(trigger, "Problem is at")
-		for i := range ss.hashes {
-			_, trigger = matchTrigger(output, fmt.Sprintf("%s%d", hash_ev_name, i))
+		for i, s := range ss.hashes {
+			_, trigger = matchTrigger(output, fmt.Sprintf("%s%d", hash_ev_name, i), s)
 			printPOS(trigger, "and")
 		}
 	}
