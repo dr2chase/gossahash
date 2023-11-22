@@ -429,11 +429,15 @@ will search for a function whose miscompilation causes the problem.
 
 The hash suffix is made of 1 and 0 characters, expected to match the
 suffix of a hash of something interesting, like a function or variable
-name or their combination. Each run of the executable is expected to
-print '<evname> triggered' (for example, '%s triggered') and the hash
-suffix(es) are chosen to search for the one(s) that result in a single
-trigger line occurring.  Multiple occurrences of exactly the same
-trigger line are counted once.
+name or their combination.  For example
+
+  GOCOMPILEDEBUG=gossahash=101 ./make.bash
+
+Each run of the executable is expected to print '<evname> triggered'
+(for example, '%s triggered') and the hash suffix(es) are chosen to
+search for the one(s) that result in a single trigger line occurring.
+Multiple occurrences of exactly the same trigger line are counted
+once.
 
 By default the trigger lines are expected to be written to standard
 output, but -f flag sets the environment variable GSHS_LOGFILE to
@@ -457,8 +461,31 @@ The %s command can be run as its own test with the -F flag, as in
 (prints about 100 long lines, and demonstrates multi-point failure detection):
 
   %s %s -F 
+
+The -BX flag controls treatment of overlapping multiple-point errors.
+By default, 'gossahash -n=6 gossahash -F' will find 5 failures, but
+with sets of hash matches that overlap (i.e., '1101000' appears 4 times)
+
+FINISHED, after filtering, suggest this command line for debugging:
+GOSSAFUNC='dog' GOCOMPILEDEBUG=gossahash=0001010/1100000110/0000010/010100010 gossahash -F
+FINISHED, after filtering, suggest this command line for debugging:
+GOSSAFUNC='fox' GOCOMPILEDEBUG=gossahash=0000010/1011101100/010100010/1101000 gossahash -F
+FINISHED, after filtering, suggest this command line for debugging:
+GOSSAFUNC='emu' GOCOMPILEDEBUG=gossahash=1100000110/1101000/010100010/1011101100 gossahash -F
+FINISHED, after filtering, suggest this command line for debugging:
+GOSSAFUNC='hen' GOCOMPILEDEBUG=gossahash=1011101100/1101000/10001101/0110101001 gossahash -F
+FINISHED, after filtering, suggest this command line for debugging:
+GOSSAFUNC='cat' GOCOMPILEDEBUG=gossahash=010100010/10001101/1101000/0110101001 gossahash -F
+
+but 'gossahash -n=6 -BX gossahash -F' fails only twice because it excludes all hashes
+in the first set from subsequent searches.
+
+FINISHED, after filtering, suggest this command line for debugging:
+GOSSAFUNC='dog' GOCOMPILEDEBUG=gossahash=0001010/1100000110/010100010/0000010 gossahash -F
+FINISHED, after filtering, suggest this command line for debugging:
+GOSSAFUNC='hen' GOCOMPILEDEBUG=gossahash=1011101100/0110101001/1101000/10001101 gossahash -F
 `,
-			os.Args[0], hash_ev_name, os.Args[0], os.Args[0], os.Args[0])
+			os.Args[0], hash_ev_string, os.Args[0], os.Args[0], os.Args[0])
 	}
 
 	flag.Parse()

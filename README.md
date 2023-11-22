@@ -2,28 +2,31 @@
 Searches for the function that the SSA phase of the Go compiler is doing wrong.
 
 ```
-Usage of ./gossahash:
+Usage of gossahash:
+  -B  use bisect syntax for matches
   -BX
-        for repeated multi-point failure search, exclude all points on failure location
+      for repeated multi-point failure search, exclude all points on failure location
   -E string
-        prefix string for environment-encoded variables, e.g., GOCOMPILEDEBUG= or GODEBUG= (default "GOCOMPILEDEBUG=")
-  -F    act as a test program.  Generates multiple multipoint failures.
+      prefix string for environment-encoded variables, e.g., GOCOMPILEDEBUG= or GODEBUG= (default "GOCOMPILEDEBUG=")
+  -F  act as a test program.  Generates multiple multipoint failures.
   -H string
-        string prepended to all hash encodings, for special hash interpretation/debugging
+      string prepended to all hash encodings, for special hash interpretation/debugging
   -R string
-        begin searching at this suffix, it should known-fail for this suffix[1:]
+      begin searching at this suffix, it should known-fail for this suffix[1:]
   -X string
-        exclude these suffixes from matching
+      exclude these suffixes from matching
   -e string
-        name/prefix of variable communicating hash suffix (default "gossahash")
-  -f    if set, use a file instead of standard out for hash trigger information
+      name/prefix of variable communicating hash suffix (default "gossahash")
+  -f  if set, use a file instead of standard out for hash trigger information
   -fma
-        search for fused-multiply-add floating point rounding problems (for arm64, ppc64, s390x)
+      search for fused-multiply-add floating point rounding problems (for arm64, ppc64, s390x)
+  -loopvar
+      search for loopvar-dependent failures
   -n int
-        stop after finding this many failures (0 for don't stop) (default 1)
+      stop after finding this many failures (0 for don't stop) (default 1)
   -t int
-        timeout in seconds for running test script, 0=run till done. Negative timeout means timing out is a pass, not a failure (default 900)
-  -v    also print output of test script (default false)
+      timeout in seconds for running test script, 0=run till done. Negative timeout means timing out is a pass, not a failure (default 900)
+  -v  also print output of test script (default false)
 ```
 
 ./gossahash runs the test executable (default ./gshs_test.bash) repeatedly
@@ -38,7 +41,12 @@ will search for a function whose miscompilation causes the problem.
 
 The hash suffix is made of 1 and 0 characters, expected to match the
 suffix of a hash of something interesting, like a function or variable
-name or their combination. Each run of the executable is expected to
+name or their combination.  For example, a hash search might run
+```
+GOCOMPILEDEBUG=gossahash=101 ./make.bash
+```
+
+Each run of the executable is expected to
 print '\<evname\> triggered' (for example, 'gossahash triggered') and the hash
 suffix(es) are chosen to search for the one(s) that result in a single
 trigger line occurring.  Multiple occurrences of exactly the same
